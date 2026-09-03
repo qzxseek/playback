@@ -3,8 +3,8 @@
    @note : 录音测试脚本（类 API 版）
           用法: test_record.exe [录制总时长秒数]   （默认 3 秒）
           SDK 录制走 CALLBACK_FUNCTION，回调在 winmm 线程上，无需窗口/消息循环。
-          时间线：录 1s -> 暂停 1s -> 继续录 (总时长-2)s -> 停止（SDK 内部落盘 output.wav）。
-          校验：output.wav 存在、时长 ≈ 总时长-1s（暂停的 1 秒不应被录进去）。
+          时间线：录 1s -> 暂停 1s -> 继续录 (总时长-2)s -> 停止（SDK 内部落盘加密 output.aenc）。
+          校验：output.aenc 存在、时长 ≈ 总时长-1s（暂停的 1 秒不应被录进去）。
 */
 
 #include <windows.h>
@@ -68,7 +68,7 @@ int main(int argc, char* argv[])
     Sleep((totalSec - 2) * 1000);
     std::printf("[info] resumed and recorded to end\n");
 
-    // ---- 停止（SDK 内部保存 output.wav）----
+    // ---- 停止（SDK 内部按默认加密保存 output.aenc）----
     st = recorder.StopRecording();
     if (st != AudioSdk::AudioSdkState::NONE)
     {

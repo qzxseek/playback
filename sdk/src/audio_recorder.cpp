@@ -91,9 +91,10 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
    waveInClose(m_hWaveIn);
    m_hWaveIn = NULL;
 
-   // 保存录音数据：统一走 SaveWavFile, bEncrypt=true 落盘加密容器 .aenc
    EnableWindow(m_hBtnPause, FALSE);
-   CWavFormat::SaveWavFile(m_outputFile, m_recordedData.data(),
+   std::wstring outFile = m_outputName;
+   outFile += m_isAencEncrypt ? L".aenc" : L".wav";
+   CWavFormat::SaveWavFile(outFile.c_str(), m_recordedData.data(),
                            m_recordedData.size(), m_isAencEncrypt);
 
    return AudioSdk::AudioSdkState::NONE;
@@ -124,12 +125,18 @@ void CAudioRecorder::OnBufferDone(WAVEHDR* hdr) {
       waveInAddBuffer(m_hWaveIn, hdr, sizeof(WAVEHDR));
 }
 
-void CAudioRecorder::SetAencEncrypt(bool& bEncrypt) {
-   if (m_isRecording) bEncrypt = false;
+/**
+ * @brief 设置是否加密保存(录制中不生效)
+ * @param bEncrypt 是否加密
+ * @return 是否生效; 录制中返回 false
+ */
+AudioSdk::AudioSdkState CAudioRecorder::SetAencEncrypt(bool& bEncrypt) {
+   if (m_isRecording) return AudioSdk::AudioSdkState::PLATFORM_ERROR;     // 录制中不允许切换加密方式
+   if (bEncrypt) bEncrypt = false;
    else bEncrypt = true;
+   return AudioSdk::AudioSdkState::NONE;
 }
 
-// 获取是否加密保存
 bool CAudioRecorder::GetAencEncrypt() const {
    return m_isAencEncrypt;
 }
