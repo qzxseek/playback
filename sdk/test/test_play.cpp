@@ -17,8 +17,7 @@
 #include <vector>
 
 #include "audio_sdk/audio_player.h"
-#include "audio_sdk/wav_format.h"      // 生成测试音：CWavFormat::SaveWavFile
-#include "audio_sdk/encrypted_format.h" // 生成加密 .aenc：CEncryptedFormat::SaveAencFile
+#include "audio_sdk/wav_format.h"      // 生成测试音：CWavFormat::SaveWavFile(默认明文 / bEncrypt=true 加密)
 
 // 把命令行窄字符参数转成宽字符（Windows 下 argv 是系统代码页编码，用 CP_ACP 转）
 static bool NarrowToWide(const char* narrow, std::wstring& out)
@@ -60,8 +59,9 @@ static bool GenerateEncryptedTone(const std::wstring& filePath)
     for (size_t i = 0; i < samples.size(); ++i)
         samples[i] = static_cast<int16_t>(8000.0 * std::sin(2.0 * 3.14159265358979 * kFreqHz * i / kSampleRate));
 
-    AudioSdk::AudioSdkState st = CEncryptedFormat::SaveAencFile(
-        filePath.c_str(), samples.data(), samples.size() * sizeof(int16_t));
+    // 同一个落盘入口, bEncrypt=true 即存加密容器
+    AudioSdk::AudioSdkState st = CWavFormat::SaveWavFile(
+        filePath.c_str(), samples.data(), samples.size() * sizeof(int16_t), /*bEncrypt=*/true);
     return st == AudioSdk::AudioSdkState::NONE;
 }
 

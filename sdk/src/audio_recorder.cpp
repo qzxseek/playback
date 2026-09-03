@@ -3,7 +3,7 @@
    @note : 音频录制实现
 */
 #include "audio_sdk/audio_recorder.h"
-#include "audio_sdk/encrypted_format.h"   
+#include "audio_sdk/wav_format.h"   // SaveWavFile：录音落盘统一走它(bEncrypt=true 存加密)
 
 #include <mmeapi.h>
 #include <winuser.h>
@@ -92,10 +92,10 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
    waveInClose(m_hWaveIn);
    m_hWaveIn = NULL;
 
-   // 保存录音数据
+   // 保存录音数据：统一走 SaveWavFile, bEncrypt=true 落盘加密容器 .aenc
    EnableWindow(m_hBtnPause, FALSE);
-   // 加密容器 .aenc：魔数 + 标准 WAV 头 + XOR 密文
-   CEncryptedFormat::SaveAencFile(m_outputFile, m_recordedData.data(), m_recordedData.size());
+   CWavFormat::SaveWavFile(m_outputFile, m_recordedData.data(),
+                           m_recordedData.size(), m_isAencEncrypt);
 
    return AudioSdk::AudioSdkState::NONE;
 }
@@ -125,3 +125,12 @@ void CAudioRecorder::OnBufferDone(WAVEHDR* hdr) {
       waveInAddBuffer(m_hWaveIn, hdr, sizeof(WAVEHDR));
 }
 
+void CAudioRecorder::SetAencEncrypt(bool& bEncrypt) {
+   if (m_isRecording) bEncrypt = false;
+   else bEncrypt = true;
+}
+
+// 获取是否加密保存
+bool CAudioRecorder::GetAencEncrypt() const {
+   return m_isAencEncrypt;
+}

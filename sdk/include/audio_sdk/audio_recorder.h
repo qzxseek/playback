@@ -16,6 +16,10 @@ public:
    void PauseResumeRecording();
    // 停止音频录制
    AudioSdk::AudioSdkState StopRecording();
+   // 设置是否加密保存
+   void SetAencEncrypt(bool& bEncrypt);
+   // 获取是否加密保存
+   bool GetAencEncrypt() const;
 
 private:
    // 设备回调函数指针
@@ -31,6 +35,7 @@ private:
    bool      m_isPaused    = false;      // 是否正在暂停录制
    HWND      m_hWnd      = NULL;         // 窗口句柄 
    HWND      m_hBtnPause = NULL;         // 暂停继续按钮动态修改
+   bool      m_isAencEncrypt = true;      // 是否加密保存(默认加密)
    const wchar_t* m_outputFile = L"output.aenc";   // 录制默认保存为加密容器（.aenc）
 };
 

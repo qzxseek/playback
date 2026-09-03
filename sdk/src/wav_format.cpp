@@ -3,6 +3,7 @@
    @note : wav文件格式处理实现
 */
 #include "audio_sdk/wav_format.h"   // 内含 audio_types.h
+#include "audio_sdk/encrypted_format.h"   // bEncrypt=true 时委托存成 .aenc 容器
 
 #include <cstdint>
 #include <cstdio>
@@ -40,14 +41,20 @@ void CWavFormat::FillHeader(WavHeader& hdr, uint32_t dataSize,uint32_t sampleRat
 }
 
 /**
- * @brief 将一段 PCM 数据保存为明文 WAV 文件
+ * @brief 将一段 PCM 数据保存为文件(明文 WAV 或加密 .aenc, 由 bEncrypt 决定)
  * @param filePath 文件路径
  * @param data PCM 数据指针
  * @param dataSize PCM 数据长度
+ * @param bEncrypt 是否存为加密容器(true = .aenc; false = 明文 WAV)
  * @return AudioSdkState 操作状态
 */
-AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const wchar_t* filePath, const void* data, size_t dataSize){
-    
+AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const wchar_t* filePath, const void* data, size_t dataSize,
+                                                bool bEncrypt){
+    // 加密
+    if (bEncrypt)
+        return CEncryptedFormat::SaveAencFile(filePath, data, dataSize);
+
+    // 明文
     std::ofstream file(filePath, std::ios::out | std::ios::binary);
     if (!file.is_open())
         return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;   // 打开文件失败
