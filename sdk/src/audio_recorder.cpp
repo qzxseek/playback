@@ -8,7 +8,7 @@
 #include <mmeapi.h>
 #include <winuser.h>
 
-/*
+/** 
  * @brief 开始音频录制
  * @return 音频录制状态
  */
@@ -54,8 +54,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
    EnableWindow(m_hBtnPause, TRUE);
    return AudioSdk::AudioSdkState::NONE;
 }
-
-/*
+/** 
  * @brief 暂停/继续音频录制
  */
 void CAudioRecorder::PauseResumeRecording() {
@@ -72,7 +71,7 @@ void CAudioRecorder::PauseResumeRecording() {
    }
 }
 
-/*
+/** 
  * @brief 停止音频录制
  * @return 音频录制状态
  */
@@ -99,7 +98,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
 
    return AudioSdk::AudioSdkState::NONE;
 }
-/*
+/** 
  * @brief 设备回调函数
  * @param hWaveIn 音频设备句柄
  * @param msg 消息类型
@@ -112,7 +111,7 @@ void CALLBACK CAudioRecorder::WaveInProc(HWAVEIN hWaveIn, UINT uMsg, DWORD_PTR d
    if (uMsg == WIM_DATA)     // 系统预定义常量(0x3C4)，录满一个缓冲区时来一次
       reinterpret_cast<CAudioRecorder*>(dwInstanceData)->OnBufferDone((WAVEHDR*)wParam);
 }
-/*
+/** 
  * @brief 缓冲区完成回调函数
  * @param hdr 指向 WAVEHDR 结构体的指针
  */

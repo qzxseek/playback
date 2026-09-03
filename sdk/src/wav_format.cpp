@@ -48,8 +48,8 @@ void CWavFormat::FillHeader(WavHeader& hdr, uint32_t dataSize,uint32_t sampleRat
  * @param bEncrypt 是否存为加密容器(true = .aenc; false = 明文 WAV)
  * @return AudioSdkState 操作状态
 */
-AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const wchar_t* filePath, const void* data, size_t dataSize,
-                                                bool bEncrypt){
+AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const wchar_t* filePath, const void* data, 
+    size_t dataSize,bool bEncrypt){
     // 加密
     if (bEncrypt)
         return CEncryptedFormat::SaveAencFile(filePath, data, dataSize);
