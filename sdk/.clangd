@@ -1,0 +1,20 @@
+# clangd 配置：让它按 MSVC(x64) 目标解析，认得 __int64/__stdcall 等 MSVC 关键字，
+# 并指明 MSVC 2019 + Windows SDK 的系统头路径（无 compile_commands.json 时的等价配置）。
+CompileFlags:
+  Add:
+    - --target=x86_64-pc-windows-msvc
+    - -fms-compatibility
+    - -fms-extensions
+    - -fmsc-version=1929
+    - -std=c++17
+    - -IC:/Users/admin/Desktop/exam_sdk/sdk/include
+    - -isystem
+    - C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/VC/Tools/MSVC/14.29.30133/include
+    - -isystem
+    - C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/ucrt
+    - -isystem
+    - C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/um
+    - -isystem
+    - C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/shared
+    - -isystem
+    - C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/winrt
