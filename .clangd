@@ -1,21 +1,26 @@
+# clangd 配置：让它按 MSVC(x64) 目标解析，认得 __int64/__stdcall 等 MSVC 关键字，
+# 并指明 MSVC 2019 + Windows SDK 的系统头路径（无 compile_commands.json 时的等价配置）。
+# 注意：必须用 gcc 风格参数 + -fms-compatibility；"Compiler: cl" + MSVC /I 风格会让
+#       MSYS2 的 clangd 落入 GNU 模式，报 vadefs.h 里 __int64 不认识(应加; after top level)。
 CompileFlags:
-  Compiler: cl
   Add:
-    - /std:c++17
-    - /utf-8
-    - /I
-    - "C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/VC/Tools/MSVC/14.29.30133/include"
-    - /I
-    - "C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/ucrt"
-    - /I
-    - "C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/um"
-    - /I
-    - "C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/shared"
-    - /I
-    - "C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/winrt"
-    - /I
-    - "C:/Users/admin/Desktop/exam_sdk/sdk/include"
-    - /DWIN32
-    - /D_WINDOWS
-    - /DUNICODE
-    - /D_UNICODE
+    - --target=x86_64-pc-windows-msvc
+    - -fms-compatibility
+    - -fms-extensions
+    - -fmsc-version=1929
+    - -std=c++17
+    - -DUNICODE
+    - -D_UNICODE
+    - -DWIN32
+    - -D_WINDOWS
+    - -IC:/Users/admin/Desktop/exam_sdk/sdk/include
+    - -isystem
+    - C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/VC/Tools/MSVC/14.29.30133/include
+    - -isystem
+    - C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/ucrt
+    - -isystem
+    - C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/um
+    - -isystem
+    - C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/shared
+    - -isystem
+    - C:/Program Files (x86)/Windows Kits/10/Include/10.0.19041.0/winrt

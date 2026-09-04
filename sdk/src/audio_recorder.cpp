@@ -130,11 +130,11 @@ void CAudioRecorder::OnBufferDone(WAVEHDR* hdr) {
  * @param bEncrypt 是否加密
  * @return 是否生效; 录制中返回 false
  */
-AudioSdk::AudioSdkState CAudioRecorder::SetAencEncrypt(bool& bEncrypt) {
-   if (m_isRecording) return AudioSdk::AudioSdkState::PLATFORM_ERROR;     // 录制中不允许切换加密方式
-   if (bEncrypt) bEncrypt = false;
-   else bEncrypt = true;
-   return AudioSdk::AudioSdkState::NONE;
+bool CAudioRecorder::SetAencEncrypt() {
+   if (m_isRecording) return false;     // 录制中不允许切换加密方式
+   if (m_isAencEncrypt) m_isAencEncrypt = false;
+   else m_isAencEncrypt = true;
+   return m_isAencEncrypt;
 }
 
 bool CAudioRecorder::GetAencEncrypt() const {

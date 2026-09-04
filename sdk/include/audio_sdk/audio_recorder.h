@@ -18,7 +18,7 @@ public:
    // 停止音频录制
    AudioSdk::AudioSdkState StopRecording();
 
-   AudioSdk::AudioSdkState SetAencEncrypt(bool& bEncrypt);
+   bool SetAencEncrypt();
   
    bool GetAencEncrypt() const;
 

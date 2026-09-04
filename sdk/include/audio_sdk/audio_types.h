@@ -16,12 +16,7 @@
 #define BUFFER_COUNT    4
 #define BUFFER_SIZE     (SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE/8) / 10) // 100ms
 
-#define BTN_RECORD   1001      // 录制按钮
-#define BTN_PAUSE    1002      // 暂停按钮
-#define BTN_RESUME   1003      // 恢复按钮
-#define BTN_STOP     1004      // 停止按钮
-#define BTN_PLAY     1005      // 播放按钮
-#define WM_WAVEIN_DONE (WM_USER + 1)
+
 
 // SDK 接口状态
 namespace AudioSdk{
