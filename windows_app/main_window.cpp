@@ -1,92 +1,211 @@
-#define WIN32_LEAN_AND_MEAN        // 只引入常用 Win32 头, 加快编译
-#include <windows.h>
+/* @Created On : 2026/9/4
+   @Author : 孟源
+   @note : Win32 音频 UI 主窗口实现
+*/
+#include "main_window.h"    // 内含 <windows.h> 与 UNICODE 定义(必须最先)
 
-#include "main_window.h"
 
-constexpr wchar_t kClassName[] = L"Audio Recorder & Player";
+// g_pMain 声明在 main.cpp(WinMain 里 new 出来并赋值)。
+// 静态 WndProc 需要它把消息转发回实例。
+extern CMainWindows* g_pMain;
 
-void CMainWindows::CreateControls(HWND hwnd){
-    // 创建按钮
-    m_hBtnRec = CreateWindowEx(0, L"BUTTON", L"录制", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        10, 10, 100, 30, hwnd, BTN_RECORD, NULL, NULL);
+CMainWindows::CMainWindows(){
 }
 
+CMainWindows::~CMainWindows(){
+}
 
+/**
+ * @brief WM_CREATE: 记录主窗口句柄并创建全部控件
+ * @param hwnd 主窗口句柄
+ */
+void CMainWindows::OnCreate(HWND hwnd){
+    m_hwnd = hwnd;
+    CreateControls(hwnd);
+}
+
+/**
+ * @brief 创建全部子控件
+ * @param hwnd 主窗口句柄
+ */
+void CMainWindows::CreateControls(HWND hwnd){
+    HINSTANCE hInst = GetModuleHandle(NULL);   // 拿程序实例句柄
+
+    m_hBtnRec_Start_Stop = CreateWindowEx(0, L"BUTTON", L"开始录音",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 10, 110, 30,
+        hwnd, (HMENU)(INT_PTR)BTN_PLAY_PAUSE, hInst, NULL);
+    m_hBtnRecPause = CreateWindowEx(0, L"BUTTON", L"暂停录音",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 126, 10, 110, 30,
+        hwnd, (HMENU)(INT_PTR)BTN_RECORD_PAUSE, hInst, NULL);
+    m_hChkEnc = CreateWindowEx(0, L"BUTTON", L"加密",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 358, 10, 90, 30,
+        hwnd, (HMENU)(INT_PTR)BTN_ENCRYPT, hInst, NULL);
+
+    m_hBtnOpen = CreateWindowEx(0, L"BUTTON", L"打开文件...",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 70, 110, 30,
+        hwnd, (HMENU)(INT_PTR)BTN_OPEN_FILE, hInst, NULL);
+    m_hBtnPlay_Start_Stop = CreateWindowEx(0, L"BUTTON", L"播放",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 126, 70, 80, 30,
+        hwnd, (HMENU)(INT_PTR)BTN_PLAY, hInst, NULL);
+    m_hBtnPlayPause = CreateWindowEx(0, L"BUTTON", L"暂停播放",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 212, 70, 110, 30,
+        hwnd, (HMENU)(INT_PTR)BTN_PLAY_PAUSE, hInst, NULL);
+    
+    EnableWindow(m_hBtnRecPause, FALSE);                    // 禁用暂停录音按钮
+    EnableWindow(m_hBtnPlay_Start_Stop, FALSE);             // 禁用播放按钮
+    EnableWindow(m_hBtnPlay_Start_Stop, FALSE);    // 禁用播放/停止按钮
+    EnableWindow(m_hBtnPlayPause, FALSE);          // 禁用继续播放/暂停按钮
+}
+
+/**
+ * @brief 窗口过程(静态成员, 注册给系统的回调)
+ *   转发到 g_pMain 实例的 HandleMessage; g_pMain 为空时走默认处理。
+ * @param hwnd 主窗口句柄
+ * @param msg 消息类型
+ * @param wParam 消息参数1
+ * @param lParam 消息参数2
+ * @return LRESULT 处理结果
+ */
 LRESULT CALLBACK CMainWindows::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam){
-   switch(msg){
-    case WM_CREATE:{
-        CreateControls(hwnd);
+    if (g_pMain)
+        return g_pMain->HandleMessage(hwnd, msg, wParam, lParam);
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+/**
+ * @brief 实例消息处理: 这里是真正能访问成员/控件句柄的地方
+ * @param hwnd 主窗口句柄
+ * @param msg 消息类型
+ * @param wParam 消息参数1
+ * @param lParam 消息参数2
+ * @return LRESULT 处理结果
+ */
+LRESULT CMainWindows::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam){
+    switch (msg){
+    case WM_CREATE:                 // 窗口创建成功 → 建控件
+        OnCreate(hwnd);
         return 0;
-        break;
+
+    case WM_COMMAND: {              // 控件被点击
+        const int iId = LOWORD(wParam);       // 控件 ID
+        const int iNotify = HIWORD(wParam);   // 通知码
+        if (iNotify == BN_CLICKED)
+            OnCommand(iId);
+        return 0;
     }
-    case WM_DESTROY:{                 // 销毁窗口
+
+    case WM_DESTROY:                // 窗口销毁 → 结束消息循环
         PostQuitMessage(0);
         return 0;
+    }
+
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+/**
+ * @brief WM_COMMAND: 根据控件 ID 分发按钮点击
+ * @param iId 控件 ID
+ */
+void CMainWindows::OnCommand(int iId){
+    CAudioRecorder cRecorder;          // 录制器实例
+    CAudioPlayer   cPlayer;            // 播放器实例
+    switch (iId){
+    case BTN_RECORD:                  // 开始录制
+        AudioStartRec(cRecorder);
+        break;
+    case BTN_RECORD_PAUSE:            // 暂停/继续录音
+        AudioPauseResumeRec(cRecorder);
+        break;
+    case BTN_STOP:        // 停止录音
+        AudioStopRec(cRecorder);
+        break;
+    case BTN_OPEN_FILE:        // 打开文件
+        break;
+    case BTN_PLAY:        // 播放
+        AudioStartPlay(cPlayer);
+        break;
+    case BTN_PLAY_PAUSE:  // 播放/暂停
+        break;
+    case BTN_ENCRYPT:     // 加密/取消加密
         break;
     }
-    case WM_COMMAND:{
-        const int iId = LOWORD(wParam);
-        const int iNotify = HIWORD(wParam);
-        if(iNotify == BN_CLICKED){
-            // 点击事件
-            if(iId == BTN_RECORD){
-                // 录制按钮点击
-            }
-            else if(iId == BTN_STOP){
-                // 停止按钮点击
-            }
-            else if(iId == BTN_PLAY){
-                // 播放按钮点击
-            }
-            else if(iId == BTN_PLAY_PAUSE){
-                // 播放/暂停按钮点击
-            }
-            else if(iId == BTN_ENCRYPT){
-                // 加密/取消加密按钮点击
-            }
-        }
-        return 0;
-    }
-        
-
-    }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
-    
 }
-   
 
 
-int WINAPI CMainWindows::wWinMain(
-    HINSTANCE hInstance,
-    HINSTANCE hPrevInstance,
-    LPWSTR lpCmdLine,
-    int nCmdShow
-){
-    WNDCLASSW wc = {};
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = hInstance;
-    wc.lpszClassName = kClassName;
-    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    
-    if (!RegisterClassW(&wc)) {
-        return 0;
+/**
+ * @brief 开始/继续录音
+ * @param cRecorder 录制器实例
+ */
+void CMainWindows::AudioStartRec(CAudioRecorder cRecorder){
+    auto res = cRecorder.StartRecording();
+        if (res != AudioSdk::AudioSdkState::NONE)
+        {
+            m_isRecording = true;
+            SetWindowTextW(m_hBtnRec_Start_Stop, L"停止录音");
+            SetWindowTextW(m_hBtnRecPause, L"暂停录音");
+            EnableWindow(m_hChkEnc, !m_isRecording);                // 禁用加密复选框
+            EnableWindow(m_hBtnOpen, !m_isRecording);               // 禁用打开文件按钮
+            EnableWindow(m_hBtnPlay_Start_Stop, !m_isRecording);    // 禁用播放/停止按钮
+            EnableWindow(m_hBtnPlayPause, !m_isRecording);          // 禁用继续播放/暂停按钮
+        }
+}
+
+/**
+ * @brief 暂停/继续录音
+ * @param cRecorder 录制器实例
+ */
+void CMainWindows::AudioPauseResumeRec(CAudioRecorder cRecorder){
+    cRecorder.PauseResumeRecording();
+    auto isPaused = cRecorder.GetIsPaused();
+    if (isPaused){
+        m_isRecording = false;
+        SetWindowTextW(m_hBtnRecPause, L"继续录音");
+        EnableWindow(m_hChkEnc, !m_isRecording);                // 启用加密复选框
     }
-    
-    HWND hwnd = CreateWindowEx(0,kClassName, L"Win32 音频播放器",
-        WS_OVERLAPPEDWINDOW, // 固定大小
-        CW_USEDEFAULT, CW_USEDEFAULT, 520, 380,
-        NULL, NULL, hInstance, NULL);
-
-    if (!hwnd) return 0;
-    
-    ShowWindow(hwnd, nCmdShow);          // 显示窗口
-    UpdateWindow(hwnd);                  // 更新窗口显示
-    
-    MSG msg = {};
-    while (GetMessage(&msg, NULL, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
+    else{
+        m_isRecording = true;
+        SetWindowTextW(m_hBtnRecPause, L"暂停录音");
+        EnableWindow(m_hChkEnc, !m_isRecording);                // 禁用加密复选框
     }
-    return 0;
+}
+
+/**
+ * @brief 停止录音
+ * @param cRecorder 录制器实例
+ */
+void CMainWindows::AudioStopRec(CAudioRecorder cRecorder){
+    auto res = cRecorder.StopRecording();
+    if (res != AudioSdk::AudioSdkState::NONE)
+    {
+        m_isRecording = false;
+        SetWindowTextW(m_hBtnRec_Start_Stop, L"开始录音");
+        SetWindowTextW(m_hBtnRecPause, L"暂停录音");
+        EnableWindow(m_hChkEnc, !m_isRecording);                // 启用加密复选框
+        EnableWindow(m_hBtnOpen, !m_isRecording);               // 启用打开文件按钮        
+    }
+}
+
+/**
+ * @brief 开始/继续播放
+ * @param cPlayer 播放器实例
+ */
+void CMainWindows::AudioStartPlay(CAudioPlayer cPlayer){
+    
+
+}
+
+/**
+ * @brief 暂停/继续播放
+ * @param cPlayer 播放器实例
+ */
+void CMainWindows::AudioPauseResumePlay(CAudioPlayer cPlayer){
+
+}
+
+/**
+ * @brief 停止播放
+ * @param cPlayer 播放器实例
+ */
+void CMainWindows::AudioStopPlay(CAudioPlayer cPlayer){
+
 }

@@ -48,12 +48,10 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
       waveInAddBuffer(m_hWaveIn, &m_waveHdrIn[iN],sizeof(WAVEHDR));
       
    }
-
-   waveInStart(m_hWaveIn);
-   SetWindowTextW(m_hBtnPause, L"⏸ 暂停");
-   EnableWindow(m_hBtnPause, TRUE);
+   waveInStart(m_hWaveIn);;
    return AudioSdk::AudioSdkState::NONE;
 }
+
 /** 
  * @brief 暂停/继续音频录制
  */
@@ -62,11 +60,9 @@ void CAudioRecorder::PauseResumeRecording() {
    if (!m_isRecording) return;
    if (m_isPaused) {
       waveInStart(m_hWaveIn);
-      SetWindowTextW(m_hBtnPause, L"⏸ 暂停");
       m_isPaused = false;
    } else {
       waveInStop(m_hWaveIn);        // waveInStop 暂停采集，但不关闭设备
-      SetWindowTextW(m_hBtnPause, L"▶ 继续");
       m_isPaused = true;
    }
 }
@@ -91,7 +87,6 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
    waveInClose(m_hWaveIn);
    m_hWaveIn = NULL;
 
-   EnableWindow(m_hBtnPause, FALSE);
    std::wstring outFile = m_outputName;
    outFile += m_isAencEncrypt ? L".aenc" : L".wav";
    CWavFormat::SaveWavFile(outFile.c_str(), m_recordedData.data(),
@@ -99,6 +94,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
 
    return AudioSdk::AudioSdkState::NONE;
 }
+
 /** 
  * @brief 设备回调函数
  * @param hWaveIn 音频设备句柄
@@ -139,4 +135,9 @@ bool CAudioRecorder::SetAencEncrypt() {
 
 bool CAudioRecorder::GetAencEncrypt() const {
    return m_isAencEncrypt;
+}
+
+
+bool CAudioRecorder::GetIsPaused() const{
+   return m_isPaused;
 }

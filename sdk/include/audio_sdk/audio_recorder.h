@@ -22,6 +22,8 @@ public:
   
    bool GetAencEncrypt() const;
 
+   bool GetIsPaused() const;
+
 private:
    // 设备回调函数指针
    static void WaveInProc(HWAVEIN hWaveIn, UINT uMsg, DWORD_PTR dwInstanceData, 
@@ -34,8 +36,6 @@ private:
    std::vector<BYTE> m_recordedData;     // 录制数据
    bool      m_isRecording = false;      // 是否正在录制
    bool      m_isPaused    = false;      // 是否正在暂停录制
-   HWND      m_hWnd      = NULL;         // 窗口句柄
-   HWND      m_hBtnPause = NULL;         // 暂停继续按钮动态修改
    bool      m_isAencEncrypt = true;      // 是否加密保存(默认加密)
    std::wstring m_outputName = L"output"; // 输出文件名(不含扩展名, 默认 output)
 };
