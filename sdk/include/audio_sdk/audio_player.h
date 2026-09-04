@@ -21,6 +21,7 @@ public:
    AudioSdk::AudioSdkState Seek(DWORD posBytes);        // 设置播放位置
    DWORD GetPlayPos() const;        // 获取当前播放位置
    DWORD GetTotalPos() const;       // 获取总播放时间
+   bool GetIsPaused() const;        // 获取是否暂停播放
    bool IsPlaying() const;        // 是否正在播放
    bool IsPaused() const;           // 是否暂停
    

@@ -278,7 +278,6 @@ AudioSdk::AudioSdkState CAudioPlayer::Seek(DWORD posBytes){
    SetEvent(m_hWakeEvent);                            // 唤醒播放线程
    if (m_isPaused) waveOutPause(m_hWaveOut);             // 若原先暂停，继续暂停
    return AudioSdk::AudioSdkState::NONE;
-   
 }
 
 void CAudioPlayer::Pause(){             // 暂停播放
@@ -328,3 +327,6 @@ bool CAudioPlayer::IsPlaying() const{
 bool CAudioPlayer::IsPaused() const{
    return m_isPaused;
 }    
+bool CAudioPlayer::GetIsPaused() const{
+   return m_isPaused;
+}

@@ -14,6 +14,8 @@
 #endif
 
 #include <windows.h>
+#include <commdlg.h>       
+#include <string>
 
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/audio_recorder.h"
@@ -54,11 +56,15 @@ public:
     void AudioStartPlay(CAudioPlayer cPlayer);
     void AudioPauseResumePlay(CAudioPlayer cPlayer);
     void AudioStopPlay(CAudioPlayer cPlayer);
+
+    // 打开文件对话框, 选中音频文件后把路径存进 m_curFile 并返回 true
+    bool OpenFileDialog(HWND hwndOwner);
 private:
     void CreateControls(HWND hwnd);           // 在父窗口里创建全部控件
     void OnCommand(int iId);                  // WM_COMMAND 按钮分发(点击逻辑入口)
 
     bool m_isRecording = false;                     // 是否正在录制
+    std::wstring m_curFile;                         // 当前选中待播放的音频文件路径
     HWND m_hwnd                = NULL;              // 主窗口句柄
     HWND m_hBtnRec_Start_Stop  = NULL;              // 录制/停止
     HWND m_hBtnRecPause        = NULL;              // 录制继续/暂停
