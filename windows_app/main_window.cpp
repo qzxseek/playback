@@ -4,8 +4,8 @@
 */
 #include "main_window.h"    // 内含 <windows.h> 与 UNICODE 定义(必须最先)
 
-#include <cstring>          // memcmp(判断文件头是否 .aenc 用)
-#include <fstream>          // 读文件头判断加密
+#include <cstring>          
+#include <fstream>          
 
 
 // g_pMain 声明在 main.cpp(WinMain 里 new 出来并赋值)。
@@ -250,7 +250,8 @@ void CMainWindows::AudioStartPlay(CAudioPlayer cPlayer){
                 break;
             }
             default:{
-                MessageBoxW(m_hwnd, L"请先点【打开文件】选择音频", L"播放", MB_OK | MB_ICONINFORMATION);
+                MessageBoxW(m_hwnd, L"请先点【打开文件】选择音频", L"播放", 
+                    MB_OK | MB_ICONINFORMATION);
             }
         }
     }

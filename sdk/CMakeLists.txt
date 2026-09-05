@@ -23,6 +23,8 @@ target_include_directories(audio_sdk PUBLIC
 )
 target_link_libraries(audio_sdk PUBLIC winmm)
 
+set_target_properties(audio_sdk PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+
 # 录制测试：正常多 TU 链接（CAudioRecorder 类，回调走 CALLBACK_FUNCTION，无需窗口）。
 add_executable(test_record
     test/test_record.cpp
