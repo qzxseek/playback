@@ -45,7 +45,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow){
     HWND hwnd = CreateWindowExW(
         0, kClassName, L"Win32 音频播放器",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 520, 220,
+        CW_USEDEFAULT, CW_USEDEFAULT, 600, 240,
         NULL, NULL, hInstance, NULL);
     if (!hwnd)
         return 0;

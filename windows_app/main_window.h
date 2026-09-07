@@ -1,6 +1,12 @@
 /* @Created On : 2026/9/4
    @Author : 孟源
    @note : Win32 音频 UI 主窗口(类封装: 主窗口 + 控件句柄 + 消息处理)
+   设计要点:
+   - 程序入口 wWinMain 放 main.cpp(全局函数), 本类只管"窗口 + 控件 + 消息"。
+   - 窗口过程 WndProc 必须是【静态】成员(系统回调签名不能带 this),
+     它通过全局指针 g_pMain 转发到实例的 HandleMessage(见 main.cpp 顶部)。
+   - CAudioPlayer / CAudioRecorder 是【本类成员】(生命周期与窗口一致)——
+     这样播放状态才能跨按钮点击保持, 进度条才能实时轮询/拖拽跳转。
 */
 #pragma once                       // 防止头文件被重复包含
 
@@ -14,62 +20,83 @@
 #endif
 
 #include <windows.h>
-#include <commdlg.h>       
+#include <commdlg.h>       // GetOpenFileNameW(打开文件对话框)
 #include <string>
 
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/audio_recorder.h"
 
-#define BTN_RECORD          1001      // 录制按钮
-#define BTN_RECORD_PAUSE    1002      // 录制/暂停按钮
-#define BTN_STOP            1003      // 停止录制按钮
-#define BTN_PLAY            1004      // 播放按钮
-#define BTN_PLAY_PAUSE      1005      // 播放/暂停按钮
-#define BTN_STOP_PLAY       1006      // 停止播放按钮
-#define BTN_ENCRYPT         1007      // 加密/取消加密按钮
-#define BTN_OPEN_FILE       1008      // 打开文件按钮
+// ---------------- 控件 / 消息 ID ----------------
+#define BTN_RECORD_START_STOP          1001   // 开始录音 / 停止录音(同一个按钮切换文字)
+#define BTN_RECORD_PAUSE    1002   // 暂停/继续录音
+#define BTN_STOP            1003   // (保留) 停止录音
+#define BTN_START_STOP_PLAY 1004   // 开始播放 / 停止播放(按当前状态)
+#define BTN_PLAY_PAUSE      1005   // 暂停/继续播放
+#define BTN_ENCRYPT         1006   // 加密复选框
+#define BTN_OPEN_FILE       1007   // 打开文件按钮
+#define IDC_LBL_TIME        1010   // 时间/状态文字
 
 #define WM_WAVEIN_DONE (WM_USER + 1)
+
+// 进度条刷新定时器 ID 与间隔
+#define TIMER_PROGRESS      1
+#define TIMER_INTERVAL_MS   100     // 每 100ms 问一次播放器播到哪
 
 class CMainWindows
 {
 public:
-    CMainWindows();              
+    CMainWindows();
     ~CMainWindows();
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-    // 实例方法: 真正的消息处理(静态 WndProc 转发到这里), 可访问成员/控件句柄。
     LRESULT HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-    // 记录主窗口句柄 + 创建全部控件。WM_CREATE 时由 HandleMessage 调用。
     void OnCreate(HWND hwnd);
+    HWND GetHwnd() const { return m_hwnd; }
 
-    HWND GetHwnd() const { return m_hwnd; }    // 供 main.cpp / 外部访问主窗口句柄
-
-    // 音频录制相关
-    void AudioStartRec(CAudioRecorder cRecorder);
-    void AudioPauseResumeRec(CAudioRecorder cRecorder);
-    void AudioStopRec(CAudioRecorder cRecorder);
-
-    // 音频播放相关
-    void AudioStartPlay(CAudioPlayer cPlayer);
-    void AudioPauseResumePlay(CAudioPlayer cPlayer);
-    void AudioStopPlay(CAudioPlayer cPlayer);
-
-    // 打开文件对话框, 选中音频文件后把路径存进 m_curFile 并返回 true
-    bool OpenFileDialog(HWND hwndOwner);
 private:
-    void CreateControls(HWND hwnd);           // 在父窗口里创建全部控件
-    void OnCommand(int iId);                  // WM_COMMAND 按钮分发(点击逻辑入口)
+    void CreateControls(HWND hwnd);
+    void OnCommand(int iId);
 
-    bool m_isRecording = false;                     // 是否正在录制
-    std::wstring m_curFile;                         // 当前选中待播放的音频文件路径
-    HWND m_hwnd                = NULL;              // 主窗口句柄
-    HWND m_hBtnRec_Start_Stop  = NULL;              // 录制/停止
-    HWND m_hBtnRecPause        = NULL;              // 录制继续/暂停
-    HWND m_hBtnPlay_Start_Stop = NULL;              // 播放/停止
-    HWND m_hBtnPlayPause       = NULL;              // 继续播放/暂停
-    HWND m_hChkEnc             = NULL;              // 加密复选框
-    HWND m_hBtnOpen            = NULL;              // 打开文件按钮
+    // ---------- 录音 ----------
+    void AudioStartRec();              // 开始 / 停止(按当前状态)
+    void AudioPauseResumeRec();
+    void AudioStopRec();
+
+    // ---------- 播放 ----------
+    void AudioStartStopPlay();
+    void AudioPauseResumePlay();
+    bool OpenFileDialog(HWND hwndOwner);
+
+    // ---------- 进度条 ----------
+    void OnTimerTick();               // 每 100ms: 刷新进度条 & 状态文字; 自然播完复位
+    void UpdateProgressUI();          // 按 m_playPosBytes / m_playTotalBytes 画条 + 刷文字
+    void InvalidateProgress();        // 让进度条区域重绘
+    void DrawProgress(HDC hdc);       // 实际绘制(轨道 + 已播填充)
+    RECT ProgressRect() const;        // 进度条所在客户区矩形(与控件布局对应)
+    DWORD ClampToBytes(int clientX);  // 客户区 x → 对应字节位置(夹到 [0,total])
+
+    // ---------- 成员 ----------
+    bool m_isRecording = false;       // 是否正在录音(含暂停)
+    bool m_recPaused   = false;
+    bool m_isPlaying   = false;       // 是否正在播放(含暂停)
+    bool m_playPaused  = false;
+    bool m_dragging    = false;       // 用户是否正按住进度条拖动
+
+    CAudioRecorder m_recorder;        // 长命成员: 录音
+    CAudioPlayer   m_player;          // 长命成员: 播放
+
+    std::wstring m_curFile;           // 当前打开的文件(播放用)
+
+    DWORD m_playPosBytes  = 0;        // 当前播放位置(字节), 定时器刷新
+    DWORD m_playTotalBytes = 0;       // 当前播放总长(字节)
+
+    HWND m_hwnd                = NULL;
+    HWND m_hBtnRec_Start_Stop  = NULL;   // 开始/停止录音
+    HWND m_hBtnRecPause        = NULL;   // 暂停/继续录音
+    HWND m_hChkEnc             = NULL;   // 加密复选框
+    HWND m_hBtnOpen            = NULL;   // 打开文件
+    HWND m_hBtnPlay_Start_Stop = NULL;   // 播放/停止播放按当前状态
+    HWND m_hBtnPlayPause       = NULL;   // 暂停/继续播放
+    HWND m_hBtnPlayStop        = NULL;   // 停止播放
+    HWND m_hLblTime            = NULL;   // 时间/状态文字
 };
