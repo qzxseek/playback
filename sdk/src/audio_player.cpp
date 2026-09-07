@@ -151,8 +151,7 @@ void CALLBACK CAudioPlayer::WaveOutProc(HWAVEOUT hWaveOut,
    @brief : 音频播放线程
 */
 void CAudioPlayer::FeedLoop(){
-   // 先放入两工作块播放(持锁: 与 Seek 的持锁段互斥; 回调已不碰锁,
-   // 持锁调 waveOutPrepareHeader/waveOutWrite 不会再与回调互堵)
+   
    EnterCriticalSection(&m_cs);
    for(int iN = 0; iN < m_iBlockCount; iN++) PreparePlay();
    LeaveCriticalSection(&m_cs);

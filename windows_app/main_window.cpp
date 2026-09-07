@@ -80,8 +80,8 @@ void CMainWindows::CreateControls(HWND hwnd){
     m_hChkEnc = CreateWindowEx(0, L"BUTTON", L"加密",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 222, 10, 80, 26,
         hwnd, (HMENU)(INT_PTR)BTN_ENCRYPT, hInst, NULL);
-    m_hLblRecTime = CreateWindowEx(0, L"STATIC", L"录音时长: 00:00",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT, 306, 14, 202, 18,
+    m_hLblRecTime = CreateWindowEx(0, L"STATIC", L"录音时长: 00:00.0",
+        WS_CHILD | WS_VISIBLE | SS_RIGHT, 306, 14, 284, 18,
         hwnd, (HMENU)(INT_PTR)IDC_LBL_REC_TIME, hInst, NULL);
 
     // 播放区 
@@ -96,8 +96,8 @@ void CMainWindows::CreateControls(HWND hwnd){
         hwnd, (HMENU)(INT_PTR)BTN_PLAY_PAUSE, hInst, NULL);
 
     // 时间/状态文字(进度条右侧)
-    m_hLblTime = CreateWindowEx(0, L"STATIC", L"00:00 / 00:00",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT, 404, 44, 104, 22,
+    m_hLblTime = CreateWindowEx(0, L"STATIC", L"00:00.0 / 00:00.0",
+        WS_CHILD | WS_VISIBLE | SS_RIGHT, 306, 44, 284, 22,
         hwnd, (HMENU)(INT_PTR)IDC_LBL_TIME, hInst, NULL);
 
     // 初始化还没开始录音/播放
@@ -316,11 +316,12 @@ bool CMainWindows::OpenFileDialog(HWND hwndOwner){
 
 /**
  * @brief 更新录音时间文字
- * @param sec 录音时长(秒)
+ * @param tenths 录音时长, 单位 0.1 秒
  */
-void CMainWindows::UpdateRecTimeUI(DWORD sec){
+void CMainWindows::UpdateRecTimeUI(DWORD tenths){
     wchar_t text[32];
-    wsprintfW(text, L"录音时长: %02u:%02u", sec / 60, sec % 60);
+    wsprintfW(text, L"录音时长: %02u:%02u.%u",
+              tenths / 600, (tenths / 10) % 60, tenths % 10);   // mm:ss.d
     SetWindowTextW(m_hLblRecTime, text);
 }
 
@@ -380,7 +381,7 @@ void CMainWindows::AudioStartStopPlay(){
 
     SetWindowTextW(m_hBtnPlay_Start_Stop, L"停止");
     SetWindowTextW(m_hBtnPlayPause, L"暂停");
-    EnableWindow(m_hBtnPlay_Start_Stop,     FALSE);
+    EnableWindow(m_hBtnPlay_Start_Stop, TRUE);
     EnableWindow(m_hBtnPlayPause, TRUE);
     EnableWindow(m_hBtnOpen,      FALSE);
     EnableWindow(m_hBtnRec_Start_Stop, FALSE);
@@ -443,10 +444,11 @@ void CMainWindows::InvalidateProgress(){
  * @brief 定时器: 问播放器播到哪 → 更新显示; 并检测"自然播完"复位
  */
 void CMainWindows::OnTimerTick(){
-    // 录音中
+    // 录音中: 已录字节 ×10 ÷ 每秒字节数 = 十分之一秒数
     if (m_isRecording){
         const size_t bytes = m_recorder.GetRecordedBytes();
-        UpdateRecTimeUI(static_cast<DWORD>(bytes / (SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8))));
+        const size_t byteRate = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8);
+        UpdateRecTimeUI(static_cast<DWORD>(bytes * 10 / byteRate));
     }
 
     if (!m_isPlaying) return;                     // 没在播就不刷
@@ -469,15 +471,18 @@ void CMainWindows::OnTimerTick(){
  * @brief 更新进度条显示
  */
 void CMainWindows::UpdateProgressUI(){
-    // 时间文字: 字节 → mm:ss(每秒字节数从文件头读, 读不到用工程默认 88200)
+    // 时间文字: 字节 → mm:ss.d(每秒字节数从文件头读, 读不到用工程默认 88200)
     DWORD byteRate = ReadByteRate(m_curFile.c_str());
     if (byteRate == 0) byteRate = 88200;
 
+    const unsigned __int64 tPosTenth = (unsigned __int64)m_playPosBytes * 10 / byteRate;
+    const unsigned __int64 tTotTenth = (unsigned __int64)m_playTotalBytes * 10 / byteRate;
+
     wchar_t now[16], tot[16], text[48];
-    wsprintfW(now, L"%02u:%02u", (m_playPosBytes / byteRate) / 60,
-                                (m_playPosBytes / byteRate) % 60);
-    wsprintfW(tot, L"%02u:%02u", (m_playTotalBytes / byteRate) / 60,
-                                (m_playTotalBytes / byteRate) % 60);
+    wsprintfW(now, L"%02u:%02u.%u",
+              (UINT)(tPosTenth / 600), (UINT)((tPosTenth / 10) % 60), (UINT)(tPosTenth % 10));
+    wsprintfW(tot, L"%02u:%02u.%u",
+              (UINT)(tTotTenth / 600), (UINT)((tTotTenth / 10) % 60), (UINT)(tTotTenth % 10));
     wsprintfW(text, L"%s / %s", now, tot);
     SetWindowTextW(m_hLblTime, text);
 
