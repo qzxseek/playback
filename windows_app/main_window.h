@@ -34,7 +34,8 @@
 #define BTN_PLAY_PAUSE      1005   // 暂停/继续播放
 #define BTN_ENCRYPT         1006   // 加密复选框
 #define BTN_OPEN_FILE       1007   // 打开文件按钮
-#define IDC_LBL_TIME        1010   // 时间/状态文字
+#define IDC_LBL_TIME        1008   // 时间/状态文字
+#define IDC_LBL_REC_TIME    1009   // 录音时间文字  
 
 #define WM_WAVEIN_DONE (WM_USER + 1)
 
@@ -61,6 +62,7 @@ private:
     void AudioStartRec();              // 开始 / 停止(按当前状态)
     void AudioPauseResumeRec();
     void AudioStopRec();
+    void UpdateRecTimeUI(DWORD sec);
 
     // ---------- 播放 ----------
     void AudioStartStopPlay();
@@ -98,5 +100,6 @@ private:
     HWND m_hBtnPlay_Start_Stop = NULL;   // 播放/停止播放按当前状态
     HWND m_hBtnPlayPause       = NULL;   // 暂停/继续播放
     HWND m_hBtnPlayStop        = NULL;   // 停止播放
+    HWND m_hLblRecTime         = NULL;   // 录音时间文字
     HWND m_hLblTime            = NULL;   // 时间/状态文字
 };

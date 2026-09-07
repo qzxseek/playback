@@ -80,8 +80,9 @@ void CMainWindows::CreateControls(HWND hwnd){
     m_hChkEnc = CreateWindowEx(0, L"BUTTON", L"加密",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 222, 10, 80, 26,
         hwnd, (HMENU)(INT_PTR)BTN_ENCRYPT, hInst, NULL);
-    SendMessageW(m_hChkEnc, BM_SETCHECK,
-                 m_recorder.GetAencEncrypt() ? BST_CHECKED : BST_UNCHECKED, 0);
+    m_hLblRecTime = CreateWindowEx(0, L"STATIC", L"录音时长: 00:00",
+        WS_CHILD | WS_VISIBLE | SS_RIGHT, 306, 14, 202, 18,
+        hwnd, (HMENU)(INT_PTR)IDC_LBL_REC_TIME, hInst, NULL);
 
     // 播放区 
     m_hBtnOpen = CreateWindowEx(0, L"BUTTON", L"打开文件",
@@ -249,6 +250,10 @@ void CMainWindows::AudioStartRec(){
         EnableWindow(m_hBtnOpen, FALSE);         // 录音时禁用播放区
         EnableWindow(m_hBtnPlay_Start_Stop, FALSE);
         EnableWindow(m_hBtnPlayPause, FALSE);
+        while (m_isRecording && !m_recPaused){
+            DWORD sec = m_recorder.GetRecordedBytes() / (BUFFER_SIZE * 10);  // 录了多少字节 ÷ 每秒字节数
+            UpdateRecTimeUI(sec);
+        }
     }
     else{
         // ---- 停止录音 → 落盘 ----
@@ -309,6 +314,16 @@ bool CMainWindows::OpenFileDialog(HWND hwndOwner){
     if (!m_isRecording && !m_isPlaying)
         EnableWindow(m_hBtnPlay_Start_Stop, TRUE);
     return true;
+}
+
+/**
+ * @brief 更新录音时间文字
+ * @param sec 录音时长(秒)
+ */
+void CMainWindows::UpdateRecTimeUI(DWORD sec){
+    wchar_t text[32];
+    wsprintfW(text, L"录音时长: %02u:%02u", sec / 60, sec % 60);
+    SetWindowTextW(m_hLblRecTime, text);
 }
 
 // --------------播放相关------------------

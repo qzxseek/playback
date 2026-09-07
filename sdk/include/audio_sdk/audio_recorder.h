@@ -24,6 +24,8 @@ public:
 
    bool GetIsPaused() const;
 
+   size_t GetRecordedBytes() const;
+
 private:
    // 设备回调函数指针
    static void WaveInProc(HWAVEIN hWaveIn, UINT uMsg, DWORD_PTR dwInstanceData, 

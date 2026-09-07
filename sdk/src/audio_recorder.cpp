@@ -141,3 +141,7 @@ bool CAudioRecorder::GetAencEncrypt() const {
 bool CAudioRecorder::GetIsPaused() const{
    return m_isPaused;
 }
+
+size_t CAudioRecorder::GetRecordedBytes() const{
+   return m_recordedData.size();
+}
