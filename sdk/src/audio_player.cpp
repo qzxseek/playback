@@ -143,16 +143,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const wchar_t* filePath){
 void CALLBACK CAudioPlayer::WaveOutProc(HWAVEOUT hWaveOut,
    UINT uMsg, DWORD_PTR dwInstanceData, DWORD_PTR wParam, DWORD_PTR lParam){
    if (uMsg == WOM_DONE){                            // 工作块播放完成
-      auto* self = (CAudioPlayer*)dwInstanceData;
-      EnterCriticalSection(&self->m_cs);
-      WAVEHDR* hdr = (WAVEHDR*)wParam;
-      for (auto& block:self->m_vecBlocks)
-         if (&block.waveHdr == hdr) {
-            block.isDevice = false;                  // 已播放完，标记为闲置
-            break;
-         }
-      LeaveCriticalSection(&self->m_cs);
-      SetEvent(self->m_hWakeEvent);  // 唤醒播放线程
+      SetEvent(((CAudioPlayer*)dwInstanceData)->m_hWakeEvent);   // 唤醒播放线程
    }
 }
 
@@ -160,16 +151,29 @@ void CALLBACK CAudioPlayer::WaveOutProc(HWAVEOUT hWaveOut,
    @brief : 音频播放线程
 */
 void CAudioPlayer::FeedLoop(){
-   // 先放入两工作块播放
+   // 先放入两工作块播放(持锁: 与 Seek 的持锁段互斥; 回调已不碰锁,
+   // 持锁调 waveOutPrepareHeader/waveOutWrite 不会再与回调互堵)
+   EnterCriticalSection(&m_cs);
    for(int iN = 0; iN < m_iBlockCount; iN++) PreparePlay();
+   LeaveCriticalSection(&m_cs);
 
    for(;;){
       // 等待唤醒事件或停止事件
       const HANDLE waits[2] = {m_hWakeEvent, m_hStopEvent};
       DWORD dwRet = WaitForMultipleObjects(2, waits, FALSE, 200);
       if (dwRet == WAIT_OBJECT_0 + 1) break;  // 停止播放
-      
+
       EnterCriticalSection(&m_cs);
+
+      // 1) 回收已播完的块: 回调不再改状态(防死锁), 由本线程查 WHDR_DONE 发现
+      for (auto& block : m_vecBlocks){
+         if (block.isDevice && (block.waveHdr.dwFlags & WHDR_DONE)){
+            block.isDevice = false;                  // 设备已放完, 块回到闲置池
+            block.waveHdr.dwFlags = 0;               // 清标志, 供下次 prepare 复用
+         }
+      }
+
+      // 2) 补块: 闲置块少于阈值就再喂给设备
       int iDev = 0;        // 获取当前多少工作块
       for(auto& block : m_vecBlocks) if (block.isDevice) iDev++;
       while(iDev < m_iBlockCount && m_readPos < m_dataSize) {
@@ -193,7 +197,7 @@ void CAudioPlayer::FeedLoop(){
          break;
       }
    }
-};   
+};
 
 /**
    @brief : 准备下一块数据，播放
@@ -224,10 +228,9 @@ bool CAudioPlayer::PreparePlay(){
 */
 void CAudioPlayer::CleanUpDevice(){
    if (m_hWaveOut) {
-      waveOutReset(m_hWaveOut);                     // 缓冲区状态退回   
-      for(auto& block : m_vecBlocks) 
-         if (block.isDevice) 
-         // 取消所有工作块的缓冲区准备
+      waveOutReset(m_hWaveOut);                     // 缓冲区状态退回
+      for(auto& block : m_vecBlocks)
+         if (block.waveHdr.dwFlags & WHDR_PREPARED)
             waveOutUnprepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
 
       waveOutClose(m_hWaveOut);
@@ -259,23 +262,21 @@ AudioSdk::AudioSdkState CAudioPlayer::Seek(DWORD posBytes){
    if (posBytes >= m_dataSize) posBytes = (DWORD)m_dataSize;
 
    waveOutPause(m_hWaveOut);          // 暂停播放
-   waveOutReset(m_hWaveOut);          // 缓冲区状态退回   
-
-   for(auto& block : m_vecBlocks) 
-      if (block.isDevice) 
-         // 取消所有工作块的缓冲区准备
-         waveOutUnprepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
-   
    EnterCriticalSection(&m_cs);
-   for (auto& block : m_vecBlocks) {
-      if (block.waveHdr.dwFlags & WHDR_PREPARED )
+   waveOutReset(m_hWaveOut);          // 清掉"等锁期间播放线程新写的块"
+
+   for (auto& block : m_vecBlocks){
+      if (block.waveHdr.dwFlags & WHDR_PREPARED)
          waveOutUnprepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
-      block.isDevice = false;
+   }
+   for (auto& block : m_vecBlocks) {
+      block.isDevice = false;              // 全部标记闲置
+      block.waveHdr.dwFlags = 0;           // 清 DONE/PREPARED 位, 供下次复用
    }
    m_readPos = posBytes;
    LeaveCriticalSection(&m_cs);
 
-   SetEvent(m_hWakeEvent);                            // 唤醒播放线程
+   SetEvent(m_hWakeEvent);                            // 唤醒播放线程, 从新位置补块
    if (m_isPaused) waveOutPause(m_hWaveOut);             // 若原先暂停，继续暂停
    return AudioSdk::AudioSdkState::NONE;
 }

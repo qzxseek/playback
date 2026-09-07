@@ -100,7 +100,7 @@ void CMainWindows::CreateControls(HWND hwnd){
         WS_CHILD | WS_VISIBLE | SS_RIGHT, 404, 44, 104, 22,
         hwnd, (HMENU)(INT_PTR)IDC_LBL_TIME, hInst, NULL);
 
-    // 初始: 还没开始录音/播放
+    // 初始化还没开始录音/播放
     EnableWindow(m_hBtnRecPause, FALSE);
     EnableWindow(m_hBtnPlay_Start_Stop, FALSE);
     EnableWindow(m_hBtnPlayPause, FALSE);
@@ -250,16 +250,14 @@ void CMainWindows::AudioStartRec(){
         EnableWindow(m_hBtnOpen, FALSE);         // 录音时禁用播放区
         EnableWindow(m_hBtnPlay_Start_Stop, FALSE);
         EnableWindow(m_hBtnPlayPause, FALSE);
-        while (m_isRecording && !m_recPaused){
-            DWORD sec = m_recorder.GetRecordedBytes() / (BUFFER_SIZE * 10);  // 录了多少字节 ÷ 每秒字节数
-            UpdateRecTimeUI(sec);
-        }
+        UpdateRecTimeUI(0);                       // 录音时长归零
     }
     else{
         // ---- 停止录音 → 落盘 ----
         m_recorder.StopRecording();
         m_isRecording = false;
         m_recPaused   = false;
+        UpdateRecTimeUI(0);                         // 录音时长归零
         SetWindowTextW(m_hBtnRec_Start_Stop, L"开始录音");
         SetWindowTextW(m_hBtnRecPause, L"暂停录音");
         EnableWindow(m_hBtnRecPause, FALSE);
@@ -445,6 +443,12 @@ void CMainWindows::InvalidateProgress(){
  * @brief 定时器: 问播放器播到哪 → 更新显示; 并检测"自然播完"复位
  */
 void CMainWindows::OnTimerTick(){
+    // 录音中
+    if (m_isRecording){
+        const size_t bytes = m_recorder.GetRecordedBytes();
+        UpdateRecTimeUI(static_cast<DWORD>(bytes / (SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8))));
+    }
+
     if (!m_isPlaying) return;                     // 没在播就不刷
     if (m_dragging) return;                        // 拖动预览中, 不抢位置
 
