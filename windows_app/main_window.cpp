@@ -383,7 +383,7 @@ void CMainWindows::AudioStartStopPlay(){
     SetWindowTextW(m_hBtnPlayPause, L"暂停");
     EnableWindow(m_hBtnPlay_Start_Stop, TRUE);
     EnableWindow(m_hBtnPlayPause, TRUE);
-    EnableWindow(m_hBtnOpen,      FALSE);
+    EnableWindow(m_hBtnOpen, FALSE);
     EnableWindow(m_hBtnRec_Start_Stop, FALSE);
     EnableWindow(m_hBtnRecPause, FALSE);
     EnableWindow(m_hChkEnc, FALSE);
