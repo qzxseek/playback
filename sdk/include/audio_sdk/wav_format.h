@@ -41,7 +41,7 @@ public:
     ~CWavFormat() = default;
 
   
-    static AudioSdk::AudioSdkState SaveWavFile(const wchar_t* filePath, const void* data, 
+    static AudioSdk::AudioSdkState SaveWavFile(const char* filePath, const void* data,
         size_t dataSize,bool bEncrypt = false);
 
     static void FillHeader(WavHeader& hdr, uint32_t dataSize,

@@ -7,6 +7,21 @@
 
 #include <mmeapi.h>
 #include <winuser.h>
+#include <string>
+
+// 宽字符路径 → UTF-8(格式层接口统一 UTF-8; 设备层管本地宽路径, 交给格式层前转换)
+static std::string WideToUtf8(const std::wstring& wide)
+{
+    if (wide.empty())
+        return {};
+    const int len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0,
+                                        nullptr, nullptr);
+    if (len <= 1)
+        return {};
+    std::string utf8(static_cast<size_t>(len) - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &utf8[0], len, nullptr, nullptr);
+    return utf8;
+}
 
 /** 
  * @brief 开始音频录制
@@ -89,7 +104,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
 
    std::wstring outFile = m_outputName;
    outFile += m_isAencEncrypt ? L".aenc" : L".wav";
-   CWavFormat::SaveWavFile(outFile.c_str(), m_recordedData.data(),
+   const std::string utf8Path = WideToUtf8(outFile);   // 宽路径 → UTF-8 再交给格式层
+   CWavFormat::SaveWavFile(utf8Path.c_str(), m_recordedData.data(),
                            m_recordedData.size(), m_isAencEncrypt);
 
    return AudioSdk::AudioSdkState::NONE;

@@ -3,9 +3,10 @@
    @note : 加密格式实现
 */
 #include "audio_sdk/encrypted_format.h"
-#include "audio_sdk/wav_format.h"   
+#include "audio_sdk/wav_format.h"
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <vector>
 
@@ -44,7 +45,7 @@ void CEncryptedFormat::XorCrypt(uint8_t* data, size_t n)
  * @param pcmSize 明文 PCM 长度
  * @return 操作状态
  */
-AudioSdk::AudioSdkState CEncryptedFormat::SaveAencFile(const wchar_t* filePath,const void* pcmData,
+AudioSdk::AudioSdkState CEncryptedFormat::SaveAencFile(const char* filePath,const void* pcmData,
                                                       size_t pcmSize)
 {
     if (!filePath || (!pcmData && pcmSize > 0))
@@ -55,7 +56,8 @@ AudioSdk::AudioSdkState CEncryptedFormat::SaveAencFile(const wchar_t* filePath,c
                               static_cast<const uint8_t*>(pcmData) + pcmSize);
     XorCrypt(vecCipher.data(), vecCipher.size());
 
-    std::ofstream file(filePath, std::ios::out | std::ios::binary);
+    // UTF-8 路径 → 平台 native 编码(u8path): Windows 中文不乱码, Android/Linux 直接用
+    std::ofstream file(std::filesystem::u8path(filePath), std::ios::out | std::ios::binary);
     if (!file.is_open())
         return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
 

@@ -1,7 +1,7 @@
 /* @Created On : 2026/8/12
    @Author : 孟源
    @note : 录音测试脚本（类 API 版）
-          用法: test_record.exe [录制总时长秒数]   （默认 3 秒）
+          用法: test_record.exe [录制总时长秒数]   （默认 5 秒，最少 3 秒）
           SDK 录制走 CALLBACK_FUNCTION，回调在 winmm 线程上，无需窗口/消息循环。
           时间线：录 1s -> 暂停 1s -> 继续录 (总时长-2)s -> 停止（SDK 内部落盘加密 output.aenc）。
           校验：output.aenc 存在、时长 ≈ 总时长-1s（暂停的 1 秒不应被录进去）。
@@ -33,7 +33,8 @@ int main(int argc, char* argv[])
 {
     setvbuf(stdout, nullptr, _IONBF, 0);   // 关闭 stdout 缓冲，保证实时看到进度
 
-    // 总时长 = 录 5s + 暂停 1s + 录 (总时长-2)s，最少 5 秒
+    // 时间线 = 录 1s + 暂停 1s + 录 (总时长-2)s，总时长默认 5 秒、最少 3 秒
+    // 有效数据时长 = 1 + (总时长-2) = 总时长-1 秒（暂停那 1s 不应进数据）
     DWORD totalSec = 5;
     if (argc > 1)
     {
@@ -41,7 +42,7 @@ int main(int argc, char* argv[])
         if (secs >= 3)
             totalSec = static_cast<DWORD>(secs);
         else
-            std::printf("[warn] duration < 3s, using default 3s\n");
+            std::printf("[warn] duration < 3s, using default 5s\n");
     }
 
     CAudioRecorder recorder;
@@ -56,7 +57,7 @@ int main(int argc, char* argv[])
     std::printf("[info] recording %lu s (with a 1 s pause in the middle) ...\n",
                 static_cast<unsigned long>(totalSec));
 
-    Sleep(5000);                       // 正常录 5 秒
+    Sleep(1000);                       // 正常录 1 秒
 
     // ---- 暂停 ----
     recorder.PauseResumeRecording();

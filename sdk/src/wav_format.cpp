@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 
 /**
@@ -48,14 +49,14 @@ void CWavFormat::FillHeader(WavHeader& hdr, uint32_t dataSize,uint32_t sampleRat
  * @param bEncrypt 是否存为加密容器(true = .aenc; false = 明文 WAV)
  * @return AudioSdkState 操作状态
 */
-AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const wchar_t* filePath, const void* data, 
+AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const char* filePath, const void* data,
     size_t dataSize,bool bEncrypt){
     // 加密
     if (bEncrypt)
         return CEncryptedFormat::SaveAencFile(filePath, data, dataSize);
 
-    // 明文
-    std::ofstream file(filePath, std::ios::out | std::ios::binary);
+    // 明文: u8path 把 UTF-8 路径按平台 native 编码转换(Windows→UTF-16 流), 中文路径不乱码
+    std::ofstream file(std::filesystem::u8path(filePath), std::ios::out | std::ios::binary);
     if (!file.is_open())
         return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;   // 打开文件失败
 

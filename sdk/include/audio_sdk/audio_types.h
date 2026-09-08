@@ -5,7 +5,6 @@
    @note : 公共数据类型
 */
 #include <vector>
-#include <windows.h>
 #include <stdio.h>
 
 
@@ -13,8 +12,13 @@
 #define SAMPLE_RATE     44100
 #define BITS_PER_SAMPLE 16
 #define CHANNELS        1
+
+#if (_WIN32)
 #define BUFFER_COUNT    4
 #define BUFFER_SIZE     (SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE/8) / 10) // 100ms
+
+#include <windows.h>
+#endif
 
 
 

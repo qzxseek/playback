@@ -32,6 +32,20 @@ static bool NarrowToWide(const char* narrow, std::wstring& out)
     return true;
 }
 
+// 宽字符路径 → UTF-8(格式层 SaveWavFile 现为跨平台 UTF-8 接口, 传给它前要转)
+static std::string WideToUtf8(const std::wstring& wide)
+{
+    if (wide.empty())
+        return {};
+    const int len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0,
+                                        nullptr, nullptr);
+    if (len <= 1)
+        return {};
+    std::string utf8(static_cast<size_t>(len) - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &utf8[0], len, nullptr, nullptr);
+    return utf8;
+}
+
 // 生成一段 3 秒 440Hz 正弦波测试音（44.1kHz / 16bit / 单声道），复用 SDK 的落盘接口
 static bool GenerateTestTone(const std::wstring& filePath)
 {
@@ -43,8 +57,9 @@ static bool GenerateTestTone(const std::wstring& filePath)
     for (size_t i = 0; i < samples.size(); ++i)
         samples[i] = static_cast<int16_t>(8000.0 * std::sin(2.0 * 3.14159265358979 * kFreqHz * i / kSampleRate));
 
+    const std::string utf8Path = WideToUtf8(filePath);   // 宽路径 → UTF-8
     AudioSdk::AudioSdkState st = CWavFormat::SaveWavFile(
-        filePath.c_str(), samples.data(), samples.size() * sizeof(int16_t));
+        utf8Path.c_str(), samples.data(), samples.size() * sizeof(int16_t));
     return st == AudioSdk::AudioSdkState::NONE;
 }
 
@@ -60,8 +75,9 @@ static bool GenerateEncryptedTone(const std::wstring& filePath)
         samples[i] = static_cast<int16_t>(8000.0 * std::sin(2.0 * 3.14159265358979 * kFreqHz * i / kSampleRate));
 
     // 同一个落盘入口, bEncrypt=true 即存加密容器
+    const std::string utf8Path = WideToUtf8(filePath);   // 宽路径 → UTF-8
     AudioSdk::AudioSdkState st = CWavFormat::SaveWavFile(
-        filePath.c_str(), samples.data(), samples.size() * sizeof(int16_t), /*bEncrypt=*/true);
+        utf8Path.c_str(), samples.data(), samples.size() * sizeof(int16_t), /*bEncrypt=*/true);
     return st == AudioSdk::AudioSdkState::NONE;
 }
 

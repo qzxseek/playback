@@ -18,7 +18,7 @@ public:
    // 判断内存中的文件头是不是 .aenc 加密容器
    static bool IsAencFile(const uint8_t* data, size_t size);
 
-   static AudioSdk::AudioSdkState SaveAencFile(const wchar_t* filePath,const void* pcmData,
+   static AudioSdk::AudioSdkState SaveAencFile(const char* filePath,const void* pcmData,
       size_t pcmSize);
 
    static void XorCrypt(uint8_t* data, size_t n);
