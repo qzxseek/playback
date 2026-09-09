@@ -16,8 +16,8 @@
 #include <string>
 #include <vector>
 
-#include "audio_sdk/audio_player.h"
-#include "audio_sdk/wav_format.h"      // 生成测试音：CWavFormat::SaveWavFile(默认明文 / bEncrypt=true 加密)
+#include "audio_sdk/windows/audio_player.h"
+#include "audio_sdk/common/wav_format.h"      // 生成测试音：CWavFormat::SaveWavFile(默认明文 / bEncrypt=true 加密)
 
 // 把命令行窄字符参数转成宽字符（Windows 下 argv 是系统代码页编码，用 CP_ACP 转）
 static bool NarrowToWide(const char* narrow, std::wstring& out)

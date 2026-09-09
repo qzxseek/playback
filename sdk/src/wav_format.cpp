@@ -2,8 +2,8 @@
    @Author : 孟源
    @note : wav文件格式处理实现
 */
-#include "audio_sdk/wav_format.h"   // 内含 audio_types.h
-#include "audio_sdk/encrypted_format.h"   // bEncrypt=true 时委托存成 .aenc 容器
+#include "audio_sdk/common/wav_format.h"   // 内含 audio_types.h
+#include "audio_sdk/common/encrypted_format.h"   // bEncrypt=true 时委托存成 .aenc 容器
 
 #include <cstdint>
 #include <cstdio>

@@ -23,8 +23,8 @@
 #include <commdlg.h>       // GetOpenFileNameW(打开文件对话框)
 #include <string>
 
-#include "audio_sdk/audio_player.h"
-#include "audio_sdk/audio_recorder.h"
+#include "audio_sdk/windows/audio_player.h"
+#include "audio_sdk/windows/audio_recorder.h"
 
 // ---------------- 控件 / 消息 ID ----------------
 #define BTN_RECORD_START_STOP          1001   // 开始录音 / 停止录音(同一个按钮切换文字)

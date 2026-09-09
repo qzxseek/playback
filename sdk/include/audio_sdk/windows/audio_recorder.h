@@ -3,7 +3,7 @@
    @note : 音频录制接口
 */
 #pragma once
-#include "audio_sdk/audio_types.h"
+#include "audio_sdk/common/audio_types.h"
 #include <string>
 
 

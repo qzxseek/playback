@@ -2,10 +2,10 @@
    @Author : 孟源
    @note : 音频播放实现
 */
-#include "audio_sdk/audio_player.h"
+#include "audio_sdk/windows/audio_player.h"
 #include "audio_sdk/common/wav_validate.h"
-#include "audio_sdk/wav_format.h"
-#include "audio_sdk/encrypted_format.h"
+#include "audio_sdk/common/wav_format.h"
+#include "audio_sdk/common/encrypted_format.h"
 
 
 

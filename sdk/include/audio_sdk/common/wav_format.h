@@ -5,7 +5,7 @@
 #pragma once
 #include <cstdint>
 
-#include "audio_sdk/audio_types.h"
+#include "audio_sdk/common/audio_types.h"
 
 // WAV 文件头结构（PCM 格式，44 字节）
 #pragma pack(push, 1)

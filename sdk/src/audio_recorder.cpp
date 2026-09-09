@@ -2,8 +2,8 @@
    @Author : 孟源
    @note : 音频录制实现
 */
-#include "audio_sdk/audio_recorder.h"
-#include "audio_sdk/wav_format.h"   // SaveWavFile：录音落盘统一走它(bEncrypt=true 存加密)
+#include "audio_sdk/windows/audio_recorder.h"
+#include "audio_sdk/common/wav_format.h"   // SaveWavFile：录音落盘统一走它(bEncrypt=true 存加密)
 
 #include <mmeapi.h>
 #include <winuser.h>
