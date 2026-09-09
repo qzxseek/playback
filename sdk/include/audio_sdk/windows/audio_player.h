@@ -14,9 +14,9 @@ public:
    ~CAudioPlayer();
 
    AudioSdk::AudioSdkState PlayWavFile(const wchar_t* filePath);
-   void Pause();              // 暂停播放
-   void Resume();             // 恢复播放
-   void Stop();               // 停止播放
+   void PausePlay();              // 暂停播放
+   void ResumePlay();             // 恢复播放
+   void StopPlay();               // 停止播放
 
    AudioSdk::AudioSdkState Seek(DWORD posBytes);        // 设置播放位置
    DWORD GetPlayPos() const;        // 获取当前播放位置

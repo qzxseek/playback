@@ -11,6 +11,18 @@
 // 静态 WndProc 需要它把消息转发回实例。
 extern CMainWindows* g_pMain;
 
+CMainWindows::CMainWindows(){
+}
+
+CMainWindows::~CMainWindows(){
+    if (m_isRecording){
+        AudioStartStopRec();
+    }
+    if (m_isPlaying){
+        AudioStartStopPlay();
+    }
+}
+
 /**
  * @brief 判断某文件前 4 字节是否 "AENC"(加密容器), 用于提示
  * @param path 文件路径
@@ -44,13 +56,6 @@ static DWORD ReadByteRate(const wchar_t* path){
     DWORD byteRate = 0;
     std::memcpy(&byteRate, raw + off + 28, sizeof(byteRate));
     return byteRate;
-}
-
-
-CMainWindows::CMainWindows(){
-}
-
-CMainWindows::~CMainWindows(){
 }
 
 /**
@@ -205,7 +210,7 @@ LRESULT CMainWindows::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 void CMainWindows::OnCommand(int iId){
     switch (iId){
     case BTN_RECORD_START_STOP:            // 开始 / 停止录音(同一按钮切换文字)
-        AudioStartRec();
+        AudioStartStopRec();
         break;
     case BTN_RECORD_PAUSE:                 // 暂停/继续录音
         AudioPauseResumeRec();
@@ -234,7 +239,7 @@ void CMainWindows::OnCommand(int iId){
 /**
  * @brief 开始 / 停止录音(按当前状态)
  */
-void CMainWindows::AudioStartRec(){
+void CMainWindows::AudioStartStopRec(){
     if (!m_isRecording){
         // ---- 开始录音 ----
         if (m_recorder.StartRecording() != AudioSdk::AudioSdkState::NONE){
@@ -333,7 +338,7 @@ void CMainWindows::UpdateRecTimeUI(DWORD tenths){
 void CMainWindows::AudioStartStopPlay(){
     // ---- 停止播放 ----
     if (m_isPlaying) {
-        m_player.Stop();
+        m_player.StopPlay();
         m_isPlaying  = false;
         m_playPaused = false;
         m_playPosBytes = 0;
@@ -397,12 +402,12 @@ void CMainWindows::AudioStartStopPlay(){
 void CMainWindows::AudioPauseResumePlay(){
     if (!m_isPlaying) return;
     if (m_playPaused){
-        m_player.Resume();
+        m_player.ResumePlay();
         m_playPaused = false;
         SetWindowTextW(m_hBtnPlayPause, L"暂停");
     }
     else{
-        m_player.Pause();
+        m_player.PausePlay();
         m_playPaused = true;
         SetWindowTextW(m_hBtnPlayPause, L"继续");
     }

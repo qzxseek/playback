@@ -10,7 +10,7 @@
 class CAudioRecorder{
 public:
    CAudioRecorder() = default;
-   ~CAudioRecorder() = default;
+   ~CAudioRecorder();
    // 开始音频录制
    AudioSdk::AudioSdkState StartRecording();
    // 暂停/继续音频录制

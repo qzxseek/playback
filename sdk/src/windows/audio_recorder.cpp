@@ -9,7 +9,15 @@
 #include <winuser.h>
 #include <string>
 
-// 宽字符路径 → UTF-8(格式层接口统一 UTF-8; 设备层管本地宽路径, 交给格式层前转换)
+CAudioRecorder::~CAudioRecorder(){
+   StopRecording();
+}
+
+/**
+ * @brief 宽字符路径 → UTF-8(格式层接口统一 UTF-8; 设备层管本地宽路径, 交给格式层前转换)
+ * @param wide 宽字符路径
+ * @return UTF-8 字符串
+ */
 static std::string WideToUtf8(const std::wstring& wide)
 {
     if (wide.empty())
@@ -124,6 +132,7 @@ void CALLBACK CAudioRecorder::WaveInProc(HWAVEIN hWaveIn, UINT uMsg, DWORD_PTR d
    if (uMsg == WIM_DATA)     // 系统预定义常量(0x3C4)，录满一个缓冲区时来一次
       reinterpret_cast<CAudioRecorder*>(dwInstanceData)->OnBufferDone((WAVEHDR*)wParam);
 }
+
 /** 
  * @brief 缓冲区完成回调函数
  * @param hdr 指向 WAVEHDR 结构体的指针

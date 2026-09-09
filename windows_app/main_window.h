@@ -59,9 +59,8 @@ private:
     void OnCommand(int iId);
 
     // ---------- 录音 ----------
-    void AudioStartRec();              // 开始 / 停止(按当前状态)
+    void AudioStartStopRec();              // 开始 / 停止(按当前状态)
     void AudioPauseResumeRec();
-    void AudioStopRec();
     void UpdateRecTimeUI(DWORD sec);
 
     // ---------- 播放 ----------

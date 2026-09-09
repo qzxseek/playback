@@ -22,7 +22,7 @@
    @brief : 析构：若还持有设备则先停止，防止泄漏
 */
 CAudioPlayer::~CAudioPlayer(){
-   Stop();
+   StopPlay();
 }
 
 /**
@@ -280,13 +280,13 @@ AudioSdk::AudioSdkState CAudioPlayer::Seek(DWORD posBytes){
    return AudioSdk::AudioSdkState::NONE;
 }
 
-void CAudioPlayer::Pause(){             // 暂停播放
+void CAudioPlayer::PausePlay(){             // 暂停播放
    if (m_isPaused || !m_isPlaying) return;
    waveOutPause(m_hWaveOut);
    m_isPaused = true;
 }
    
-void CAudioPlayer::Resume(){             // 继续播放
+void CAudioPlayer::ResumePlay(){             // 继续播放
    if (!m_isPaused || !m_isPlaying) return;
    waveOutRestart(m_hWaveOut);
    m_isPaused = false;
@@ -295,7 +295,7 @@ void CAudioPlayer::Resume(){             // 继续播放
 /**
    @brief : 停止播放
 */
-void CAudioPlayer::Stop(){             // 停止播放
+void CAudioPlayer::StopPlay(){             // 停止播放
    if (!m_isPlaying) {CleanUpDevice(); return;}
    SetEvent(m_hStopEvent);
    if (m_hThread){                     // 等待线程结束

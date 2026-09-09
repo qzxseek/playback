@@ -10,7 +10,7 @@
 WavValidate::WavValidate() = default;
 WavValidate::~WavValidate() = default;
 
-/*
+/**
  * @brief 校验内存中的 WAV 文件
  * @param data 整个 WAV 文件的内存缓冲（44 字节头 + PCM 数据）
  * @param size 缓冲长度
@@ -20,7 +20,7 @@ bool WavValidate::Validate(const uint8_t* data, size_t size){
     return ReadHeader(data, size) && ValidateHeader(size);
 }
 
-/*
+/**
  * @brief 从内存缓冲拷贝 WAV 文件头
  * @param data 文件缓冲
  * @param size 缓冲长度
@@ -35,7 +35,7 @@ bool WavValidate::ReadHeader(const uint8_t* data, size_t size){
     return true;
 }
 
-/*
+/**
  * @brief 校验 WAV 文件头内容
  * @param size 文件实际总长度
  * @return 校验通过返回 true

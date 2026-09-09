@@ -154,10 +154,10 @@ int main(int argc, char* argv[])
     }
 
     Sleep(1000);                       // 播 1 秒
-    player.Pause();
+    player.PausePlay();
     if (!player.IsPaused())
     {
-        std::printf("[error] Pause() did not take effect\n");
+        std::printf("[error] PausePlay() did not take effect\n");
         return 1;
     }
     std::printf("[info] paused, pos %lu\n", static_cast<unsigned long>(player.GetPlayPos()));
@@ -173,10 +173,10 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    player.Resume();
+    player.ResumePlay();
     if (player.IsPaused())
     {
-        std::printf("[error] Resume() did not take effect\n");
+        std::printf("[error] ResumePlay() did not take effect\n");
         return 1;
     }
     std::printf("[info] resumed\n");
@@ -204,7 +204,7 @@ int main(int argc, char* argv[])
         std::printf("[error] final position too small, playback did not complete\n");
         return 1;
     }
-    player.Stop();                     // 收尾清理
+    player.StopPlay();                     // 收尾清理
     std::printf("[ok] case 1 (play/pause/resume/seek/finish) passed\n");
 
     // ---- 用例 2：播放中 Stop 中断 ----
@@ -215,10 +215,10 @@ int main(int argc, char* argv[])
         return 1;
     }
     Sleep(700);
-    player.Stop();
+    player.StopPlay();
     if (player.IsPlaying())
     {
-        std::printf("[error] Stop() did not take effect\n");
+        std::printf("[error] StopPlay() did not take effect\n");
         return 1;
     }
     std::printf("[ok] case 2 (stop while playing) passed\n");
@@ -253,7 +253,7 @@ int main(int argc, char* argv[])
     }
     if (!WaitFinish(player, 15000))
         return 1;
-    player.Stop();
+    player.StopPlay();
     std::printf("[ok] case 3 (play encrypted .aenc) passed\n");
 
     std::printf("[ok] playback tests ALL passed\n");
