@@ -2,14 +2,18 @@
    @Author : 孟源
    @note : 音频录制实现(Windows, PIMPL: winmm 全部收在 Impl 内, 不泄露到接口头)
 */
-#include "audio_sdk/windows/audio_recorder.h"
+#include "audio_sdk/audio_recorder.h"
 #include "audio_sdk/common/wav_format.h"   // SaveWavFile：录音落盘统一走它(bEncrypt=true 存加密)
 
 #include <mmeapi.h>
 #include <winuser.h>
 #include <string>
 
-// 宽字符路径 → UTF-8(格式层接口统一 UTF-8; 设备层管本地宽路径, 交给格式层前转换)
+/**
+ * @brief 宽字符路径 → UTF-8(格式层接口统一 UTF-8; 设备层管本地宽路径, 交给格式层前转换)
+ * @param wide 宽字符路径
+ * @return UTF-8 字符串
+ */
 static std::string WideToUtf8(const std::wstring& wide)
 {
     if (wide.empty())
@@ -27,19 +31,18 @@ static std::string WideToUtf8(const std::wstring& wide)
  * @brief 音频录制实现(Windows, PIMPL: winmm 全部收在 Impl 内, 不泄露到接口头)
  * @note 该类负责加载、播放、暂停、停止音频文件。
 */
-struct CAudioRecorder::Impl
-{
-    static void WaveInProc(HWAVEIN hWaveIn, UINT uMsg, DWORD_PTR dwInstanceData,
-        DWORD_PTR wParam, DWORD_PTR lParam);          // 设备回调函数指针
-    void OnBufferDone(WAVEHDR* hdr);                  // 缓冲区完成回调函数
+struct CAudioRecorder::Impl{
+   static void WaveInProc(HWAVEIN hWaveIn, UINT uMsg, DWORD_PTR dwInstanceData,
+      DWORD_PTR wParam, DWORD_PTR lParam);          // 设备回调函数指针
+   void OnBufferDone(WAVEHDR* hdr);                  // 缓冲区完成回调函数
 
-    HWAVEIN   m_hWaveIn   = NULL;         // 句柄
-    WAVEHDR   m_waveHdrIn[BUFFER_COUNT];  // 音频缓冲区
-    std::vector<BYTE> m_recordedData;     // 录制数据
-    bool      m_isRecording = false;      // 是否正在录制
-    bool      m_isPaused    = false;      // 是否正在暂停录制
-    bool      m_isAencEncrypt = true;     // 是否加密保存(默认加密)
-    std::wstring m_outputName = L"output"; // 输出文件名(不含扩展名, 默认 output)
+   HWAVEIN   m_hWaveIn   = NULL;         // 句柄
+   WAVEHDR   m_waveHdrIn[BUFFER_COUNT];  // 音频缓冲区
+   std::vector<BYTE> m_recordedData;     // 录制数据
+   bool      m_isRecording = false;      // 是否正在录制
+   bool      m_isPaused    = false;      // 是否正在暂停录制
+   bool      m_isAencEncrypt = true;     // 是否加密保存(默认加密)
+   std::wstring m_outputName = L"output"; // 输出文件名(不含扩展名, 默认 output)
 };
 
 /** 
@@ -168,13 +171,11 @@ void CAudioRecorder::Impl::OnBufferDone(WAVEHDR* hdr) {
 
 /**
  * @brief 设置是否加密保存(录制中不生效)
- * @return 切换后的加密状态; 录制中返回当前状态(不允许切换)
  */
-bool CAudioRecorder::SetAencEncrypt() {
+void CAudioRecorder::SetAencEncrypt() {
    Impl* p = m_impl;
-   if (p->m_isRecording) return false;   // 录制中不允许切换
+   if (p->m_isRecording) return;   // 录制中不允许切换
    p->m_isAencEncrypt = !p->m_isAencEncrypt;
-   return p->m_isAencEncrypt;
 }
 
 bool CAudioRecorder::GetAencEncrypt() const {

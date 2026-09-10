@@ -1,14 +1,39 @@
-#include "audio_sdk/android/audio_recorder.h"
+#include "audio_sdk/audio_recorder.h"
 #include "audio_sdk/common/wav_format.h"        
 
 #include <cstring>
 
-CAudioRecorder::CAudioRecorder() = default;
+struct CAudioRecorder::Impl{
+    // AAudio 回调是C函数，用userData传递this指针
+    static aaudio_data_callback_result_t DataCallback(AAudioStream* stream, 
+        void* userData, void* audioData, int32_t numFrames);
+    static void* ErrorCallback(AAudioStream* stream, void* userData,
+        aaudio_error_t error);
+    // 录音回调
+    aaudio_data_callback_result_t OnAudioReady(AAudioStream* stream,void* audioData,
+        int32_t numFrames);
+    std::string m_outputName = "output";
+    bool m_isRecording = false;
+    bool m_isPaused = false;
+    bool m_isAencEncrypt = true;
+    AAudioStream* m_stream;
+
+    std::vector<uint8_t> m_vecPcmData;
+}
+
+CAudioRecorder::CAudioRecorder() : m_impl(new Impl()) {}
 
 CAudioRecorder::~CAudioRecorder(){
-    if (m_stream){
-        AAudioStream_close(&m_stream);
-        m_stream = nullptr;
+    Impl* p = m_impl;
+    if (p->m_stream){
+        AAudioStream_close(&p->m_stream);
+        p->m_stream = nullptr;
+    }
+
+    if (m_impl){
+        StopRecording();          // 若还在录, 先收尾落盘
+        delete m_impl;
+        m_impl = nullptr;
     }
 }
 
@@ -17,10 +42,11 @@ CAudioRecorder::~CAudioRecorder(){
  * @return AudioSdk::AudioSdkState 
  */
 AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
-    if (m_isRecording) return AudioSdk::AudioSdkState::NONE;
-    m_isRecording = true;
-    m_isPaused = false;
-    m_vecPcmData.clear();
+    Impl* p = m_impl;
+    if (p->m_isRecording) return AudioSdk::AudioSdkState::NONE;
+    p->m_isRecording = true;
+    p->m_isPaused = false;
+    p->m_vecPcmData.clear();
 
     AAudioStreamBuilder* builder = nullptr;
     aaudio_result_t result = AAudio_createStreamBuilder(&builder);
@@ -30,13 +56,13 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);
     AAudioStreamBuilder_setSampleRate(builder, SAMPLE_RATE);           
     AAudioStreamBuilder_setChannelCount(builder, CHANNELS);
-    AAudioStreamBuilder_setDataCallback(builder, DataCallback, this);
-    AAudioStreamBuilder_setErrorCallback(builder, ErrorCallback, this);
+    AAudioStreamBuilder_setDataCallback(builder, p->DataCallback, this);
+    AAudioStreamBuilder_setErrorCallback(builder, p->ErrorCallback, this);
     AAudioStreamBuilder_setPerformanceMode(builder, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
     AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_EXCLUSIVE);
     AAudioStreamBuilder_setSharingMode(builder, AAUDIO_SHARING_MODE_EXCLUSIVE);
 
-    result = AAudioStreamBuilder_openStream(builder, &m_stream);
+    result = AAudioStreamBuilder_openStream(builder, &p->m_stream);
     AAudioStreamBuilder_delete(builder);
     if (result != AAUDIO_OK){
         if (result == AAUDIO_ERROR_UNAVAILABLE)
@@ -45,14 +71,14 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     }
 
     // 以设备实际给的采样率/声道为准（有的设备不支持44100Hz）
-    result = AAudioStream_requestStart(m_stream);
+    result = AAudioStream_requestStart(p->m_stream);
     if (result != AAUDIO_OK){
-        AAudioStream_close(&m_stream);
-        m_stream = nullptr;
+        AAudioStream_close(&p->m_stream);
+        p->m_stream = nullptr;
         return AudioSdk::AudioSdkState::DEVICE_NOT_FOUND;
     }
     
-    m_isRecording = true;
+    p->m_isRecording = true;
     return AudioSdk::AudioSdkState::NONE;
 }
 
@@ -61,14 +87,15 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
  * @return AudioSdk::AudioSdkState 
  */
 void CAudioRecorder::PauseResumeRecording() {
-    if (!m_isRecording || !m_stream) return;
-    if (m_isPaused) {
-        AAudioStream_requestStart(m_stream);   
-        m_isPaused = false;
+    Impl* p = m_impl;
+    if (!p->m_isRecording || !p->m_stream) return;
+    if (p->m_isPaused) {
+        AAudioStream_requestStart(p->m_stream);   
+        p->m_isPaused = false;
     } else {
         // 输入流常不支持真正的 pause,用 stop 模拟:暂停期间不回调=不攒数据
-        AAudioStream_requestStop(m_stream);
-        m_isPaused = true;
+        AAudioStream_requestStop(p->m_stream);
+        p->m_isPaused = true;
     }
 }
 
@@ -77,20 +104,21 @@ void CAudioRecorder::PauseResumeRecording() {
  * @return 播放状态码
  */
 AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
-    if (!m_isRecording) return AudioSdk::AudioSdkState::NONE;
+    Impl* p = m_impl;
+    if (!p->m_isRecording) return AudioSdk::AudioSdkState::NONE;
 
-    m_isRecording = false;
-    m_isPaused = false;
-    if (m_stream) {
-        AAudioStream_requestStop(m_stream);    // 先停回调,再动数据
-        AAudioStream_close(m_stream);
-        m_stream = nullptr;
+    p->m_isRecording = false;
+    p->m_isPaused = false;
+    if (p->m_stream) {
+        AAudioStream_requestStop(p->m_stream);    // 先停回调,再动数据
+        AAudioStream_close(p->m_stream);
+        p->m_stream = nullptr;
     }
 
     // 此刻回调已停,不会再写 m_vecPcmData,可直接访问——这就是"先 stop 再落盘"的原因
-    std::string outFile = m_outputName + (m_isAencEncrypt ? ".aenc" : ".wav");
-    return CWavFormat::SaveWavFile(outFile.c_str(), m_vecPcmData.data(),
-        m_vecPcmData.size(),m_isAencEncrypt);          
+    std::string outFile = p->m_outputName + (p->m_isAencEncrypt ? ".aenc" : ".wav");
+    return CWavFormat::SaveWavFile(outFile.c_str(), p->m_vecPcmData.data(),
+        p->m_vecPcmData.size(),p->m_isAencEncrypt);          
 }
 
 /**
@@ -99,7 +127,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
  * @param userData  用户数据
  * @param error  错误码
  */
-void CAudioRecorder::ErrorCallback(AAudioStream*, void* userData, aaudio_result_t error) {
+void CAudioRecorder::Impl::ErrorCallback(AAudioStream*, void* userData, aaudio_result_t error) {
     auto* self = reinterpret_cast<CAudioRecorder*>(userData);
     // 设备被拔 / 出错:把流停掉,避免继续回调。落盘由 StopRecording 兜底。
     if (error == AAUDIO_ERROR_DISCONNECTED && self->m_stream) {
@@ -115,13 +143,14 @@ void CAudioRecorder::ErrorCallback(AAudioStream*, void* userData, aaudio_result_
  * @param numFrames 
  * @return aaudio_data_callback_result_t 
  */
-aaudio_data_callback_result_t CAudioRecorder::OnAudioReady(
+aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
         AAudioStream*, void* audioData, int32_t numFrames) {
-    if (!m_isRecording)
+    Impl* p = m_impl;
+    if (!p->m_isRecording)
         return AAUDIO_CALLBACK_RESULT_STOP;                     // 不该来的回调,让它停
     const size_t bytes = static_cast<size_t>(numFrames) * kBytesPerFrame;
-    auto* p = static_cast<const uint8_t*>(audioData);
-    m_vecPcmData.insert(m_vecPcmData.end(), p, p + bytes);  // 只做内存拷贝
+    auto* pcmData = static_cast<const uint8_t*>(audioData);
+    p->m_vecPcmData.insert(p->m_vecPcmData.end(), pcmData, pcmData + bytes);  // 只做内存拷贝
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
@@ -133,7 +162,7 @@ aaudio_data_callback_result_t CAudioRecorder::OnAudioReady(
  * @param numFrames  帧数
  * @return  回调函数
  */
-aaudio_data_callback_result_t CAudioRecorder::DataCallback(
+aaudio_data_callback_result_t CAudioRecorder::Impl::DataCallback(
         AAudioStream* stream, void* userData, void* audioData, int32_t numFrames) {
     return reinterpret_cast<CAudioRecorder*>(userData)->OnAudioReady(stream, audioData, numFrames);
 }
@@ -143,14 +172,15 @@ aaudio_data_callback_result_t CAudioRecorder::DataCallback(
  * @return bool 
  */
 void CAudioRecorder::SetAencEncrypt() {
-    if (m_isRecording) return;             // 录制中不许切,和 Windows 一致
-    m_isAencEncrypt = !m_isAencEncrypt;
+    Impl* p = m_impl;
+    if (p->m_isRecording) return;             // 录制中不许切,和 Windows 一致
+    p->m_isAencEncrypt = !p->m_isAencEncrypt;
 }
 
-bool CAudioRecorder::GetAencEncrypt() const { return m_isAencEncrypt; }
+bool CAudioRecorder::GetAencEncrypt() const { Impl* p = m_impl; return p->m_isAencEncrypt; }
 
-bool CAudioRecorder::GetIsPaused() const { return m_isPaused; }
+bool CAudioRecorder::GetIsPaused() const { Impl* p = m_impl; return p->m_isPaused; }
 
-size_t CAudioRecorder::GetRecordedBytes() const { return m_vecPcmData.size(); }
+size_t CAudioRecorder::GetRecordedBytes() const { Impl* p = m_impl; return p->m_vecPcmData.size(); }
 
-bool CAudioRecorder::GetPaused() const { return m_isPaused; }
+

@@ -2,7 +2,7 @@
    @Author : 孟源
    @note : 音频播放实现(Windows, PIMPL: winmm 全部收在 Impl 内, 不泄露到接口头)
 */
-#include "audio_sdk/windows/audio_player.h"
+#include "audio_sdk/audio_player.h"
 #include "audio_sdk/common/wav_validate.h"
 #include "audio_sdk/common/wav_format.h"
 #include "audio_sdk/common/encrypted_format.h"

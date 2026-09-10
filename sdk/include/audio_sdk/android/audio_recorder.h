@@ -23,9 +23,7 @@ public:
     // 加解密相关
     void SetAencEncrypt();
     bool GetAencEncrypt();
-
-    bool GetPaused();
-    bool GetRecording();
+    bool GetIsPaused();
     size_t GetRecordedSize();
 
 private:
@@ -33,7 +31,7 @@ private:
     // AAudio 回调是C函数，用userData传递this指针
     static aaudio_data_callback_result_t DataCallback(AAudioStream* stream, 
         void* userData, void* audioData, int32_t numFrames);
-    static void* ErrorCallback(AAudioStream* stream, void* userData，
+    static void* ErrorCallback(AAudioStream* stream, void* userData,
         aaudio_error_t error);
     // 录音回调
     aaudio_data_callback_result_t OnAudioReady(AAudioStream* stream,void* audioData,

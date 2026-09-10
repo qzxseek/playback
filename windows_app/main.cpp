@@ -19,7 +19,7 @@
 
 #include <windows.h>
 #include <mmeapi.h>          
-#include "main_window.h"
+#include "include/main_window.h"
 
 // 全局实例指针: main_window.cpp 的静态 WndProc 靠它转发消息到实例方法
 CMainWindows* g_pMain = nullptr;
