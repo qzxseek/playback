@@ -17,4 +17,4 @@ add_executable(audio_win_app
 
 set_target_properties(audio_win_app PROPERTIES WIN32_EXECUTABLE ON)
 
-target_link_libraries(audio_win_app PRIVATE audio_sdk comdlg32)
+target_link_libraries(audio_win_app PRIVATE comdlg32)

@@ -11,6 +11,20 @@
 // 静态 WndProc 需要它把消息转发回实例。
 extern CMainWindows* g_pMain;
 
+// 宽字符路径 → UTF-8(设备层 PlayWavFile 现为跨平台 UTF-8 接口, 传给它前要转)
+static std::string WideToUtf8(const std::wstring& wide)
+{
+    if (wide.empty())
+        return {};
+    const int len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0,
+                                        nullptr, nullptr);
+    if (len <= 1)
+        return {};
+    std::string utf8(static_cast<size_t>(len) - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &utf8[0], len, nullptr, nullptr);
+    return utf8;
+}
+
 CMainWindows::CMainWindows(){
 }
 
@@ -364,7 +378,7 @@ void CMainWindows::AudioStartStopPlay(){
         return;
     }
 
-    const AudioSdk::AudioSdkState res = m_player.PlayWavFile(m_curFile.c_str());
+    const AudioSdk::AudioSdkState res = m_player.PlayWavFile(WideToUtf8(m_curFile).c_str());
     if (res != AudioSdk::AudioSdkState::NONE){
         const wchar_t* msg = L"播放失败";
         switch (res){

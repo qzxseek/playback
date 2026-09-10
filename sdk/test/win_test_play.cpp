@@ -138,7 +138,7 @@ int main(int argc, char* argv[])
 
     // ---- 用例 1：正常播放 + 暂停/恢复 + Seek + 自然播完 ----
     std::printf("[info] playing %ls ...\n", filePath.c_str());
-    AudioSdk::AudioSdkState st = player.PlayWavFile(filePath.c_str());
+    AudioSdk::AudioSdkState st = player.PlayWavFile(WideToUtf8(filePath).c_str());
     if (st != AudioSdk::AudioSdkState::NONE)
     {
         std::printf("[error] PlayWavFile() returned %d\n", static_cast<int>(st));
@@ -208,7 +208,7 @@ int main(int argc, char* argv[])
     std::printf("[ok] case 1 (play/pause/resume/seek/finish) passed\n");
 
     // ---- 用例 2：播放中 Stop 中断 ----
-    st = player.PlayWavFile(filePath.c_str());
+    st = player.PlayWavFile(WideToUtf8(filePath).c_str());
     if (st != AudioSdk::AudioSdkState::NONE)
     {
         std::printf("[error] second PlayWavFile() returned %d\n", static_cast<int>(st));
@@ -240,7 +240,7 @@ int main(int argc, char* argv[])
         aencProbe.close();
     }
 
-    st = player.PlayWavFile(aencFile.c_str());
+    st = player.PlayWavFile(WideToUtf8(aencFile).c_str());
     if (st != AudioSdk::AudioSdkState::NONE)
     {
         std::printf("[error] PlayWavFile(.aenc) returned %d\n", static_cast<int>(st));

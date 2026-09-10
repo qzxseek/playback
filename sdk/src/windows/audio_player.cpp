@@ -1,13 +1,11 @@
-﻿/* @Created On : 2026/8/10
+/* @Created On : 2026/8/10
    @Author : 孟源
-   @note : 音频播放实现
+   @note : 音频播放实现(Windows, PIMPL: winmm 全部收在 Impl 内, 不泄露到接口头)
 */
 #include "audio_sdk/windows/audio_player.h"
 #include "audio_sdk/common/wav_validate.h"
 #include "audio_sdk/common/wav_format.h"
 #include "audio_sdk/common/encrypted_format.h"
-
-
 
 #include <synchapi.h>
 #include <windows.h>
@@ -17,26 +15,104 @@
 #include <fstream>
 #include <vector>
 #include <cstdio>
+#include <string>
 
 /**
-   @brief : 析构：若还持有设备则先停止，防止泄漏
+ * @brief UTF-8 → 宽字符(Windows 路径用宽字符打开才不会中文乱码)
+ * @param utf8 UTF-8 字符串指针
+ * @return std::wstring 宽字符字符串
 */
+static std::wstring Utf8ToWide(const char* utf8){
+    if (!utf8)
+        return {};
+    const int len = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, nullptr, 0);
+    if (len <= 1)
+        return {};
+    std::wstring wide(static_cast<size_t>(len) - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8, -1, &wide[0], len);
+    return wide;
+}
+
+/** 
+ * @brief 音频播放实现(Windows, PIMPL: winmm 全部收在 Impl 内, 不泄露到接口头)
+ * @note 该类负责加载、播放、暂停、停止音频文件。
+*/
+struct CAudioPlayer::Impl
+{
+    // 设备回调: 只 SetEvent, 不在回调里抢锁(避免与 Seek 死锁)
+    static void CALLBACK WaveOutProc(HWAVEOUT hWaveOut, UINT uMsg,
+        DWORD_PTR dwInstanceData, DWORD_PTR wParam, DWORD_PTR lParam);
+
+    void FeedLoop();                 // 数据加载循环
+    bool PreparePlay();              // 准备播放块与播放
+    void CleanUpDevice();            // 清理设备
+
+    static const int m_iBlockCount = 4;      // 缓冲池块数
+
+    HWAVEOUT  m_hWaveOut  = NULL;
+    bool      m_isPlaying = false;           // 是否正在播放
+    bool      m_isPaused  = false;           // 是否暂停
+
+    std::vector<BYTE> m_vecPcm;              // PCM 数据缓
+    size_t m_readPos = 0;                     // 数据加载位置
+    size_t m_dataSize = 0;                    // 数据大小
+    size_t m_playPos = 0;                     // 播放位置
+    WAVEFORMATEX m_fmt = {};                  // 音频格式描述
+
+    struct Block{
+        bool isDevice = false;                // 是否设备块
+        std::vector<BYTE> vecData;            // 数据块
+        WAVEHDR waveHdr = {};                 // 缓冲区
+    };
+    std::vector<Block> m_vecBlocks;           // 缓冲池
+    CRITICAL_SECTION m_cs;                    // 临界区锁
+    bool m_csInit = false;                    // m_cs 是否已 Initialize
+    HANDLE m_hThread = NULL;                  // 线程句柄
+    HANDLE m_hWakeEvent = NULL;               // 唤醒事件句柄   生产者唤醒消费者
+    HANDLE m_hStopEvent = NULL;               // 停止事件句柄
+};
+
+CAudioPlayer::CAudioPlayer() : m_impl(new Impl()) {}
 CAudioPlayer::~CAudioPlayer(){
-   StopPlay();
+    if (m_impl){
+        m_impl->CleanUpDevice();
+        delete m_impl;
+        m_impl = nullptr;
+    }
+}
+
+/**
+ * @brief 音频播放设备回调
+ * @param hWaveOut 音频设备句柄
+ * @param uMsg 消息类型
+ * @param dwInstanceData 实现细节指针
+ * @param wParam 消息参数1
+ * @param lParam 消息参数2
+*/
+void CALLBACK CAudioPlayer::Impl::WaveOutProc(HWAVEOUT hWaveOut,
+   UINT uMsg, DWORD_PTR dwInstanceData, DWORD_PTR wParam, DWORD_PTR lParam){
+   if (uMsg == WOM_DONE){                            // 工作块播放完成
+      SetEvent(reinterpret_cast<Impl*>(dwInstanceData)->m_hWakeEvent);   // 唤醒播放线程
+   }
 }
 
 /**
    @brief : 校验头文件、打开设备
-   @param : filePath - WAV 文件路径
+   @param : utf8Path - WAV 文件路径(UTF-8)
    @return : 音频设备打开状态
 */
-AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const wchar_t* filePath){
+AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    // 文件路径出错
-   if (!filePath)
+   if (!utf8Path)
       return AudioSdk::AudioSdkState::INVALID_PARAMETER;
 
-   // 读取文件
-   std::ifstream file(filePath, std::ios::in | std::ios::binary);
+   // 先清掉上一次(若还在播)
+   StopPlay();
+   Impl* p = m_impl;
+
+   // 读取文件(UTF-8 → 宽, Windows 下宽路径打开不乱码)
+   const std::wstring widePath = Utf8ToWide(utf8Path);
+   std::ifstream file(widePath, std::ios::in | std::ios::binary);
    if (!file.is_open())
       return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;   // 打开文件失败
 
@@ -72,43 +148,43 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const wchar_t* filePath){
       if (!validator.Validate(vecBuf.data(), vecBuf.size()))
          return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;          // 不是合法的 PCM WAV 文件
       pHdr          = &validator.Header();
-      payloadOffset = sizeof(WavHeader);                          
+      payloadOffset = sizeof(WavHeader);
    }
    else
       return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;             // 不是认识的音频格式
 
    // 数据区：明文直接取；加密容器整段 XOR 解回明文（XOR 等长，长度不变）
-   m_vecPcm.assign(vecBuf.begin() + payloadOffset, vecBuf.end());
+   p->m_vecPcm.assign(vecBuf.begin() + payloadOffset, vecBuf.end());
    if (bEncrypted)
-      CEncryptedFormat::XorCrypt(m_vecPcm.data(), m_vecPcm.size());
+      CEncryptedFormat::XorCrypt(p->m_vecPcm.data(), p->m_vecPcm.size());
 
    // 解析 WAVEFORMATEX
-   m_fmt = {};
-   m_fmt.wFormatTag = WAVE_FORMAT_PCM;
-   m_fmt.nChannels = pHdr->numChannels;
-   m_fmt.nSamplesPerSec = pHdr->sampleRate;
-   m_fmt.wBitsPerSample = pHdr->bitsPerSample;
-   m_fmt.nBlockAlign = pHdr->blockAlign;
-   m_fmt.nAvgBytesPerSec = pHdr->byteRate;
+   p->m_fmt = {};
+   p->m_fmt.wFormatTag = WAVE_FORMAT_PCM;
+   p->m_fmt.nChannels = pHdr->numChannels;
+   p->m_fmt.nSamplesPerSec = pHdr->sampleRate;
+   p->m_fmt.wBitsPerSample = pHdr->bitsPerSample;
+   p->m_fmt.nBlockAlign = pHdr->blockAlign;
+   p->m_fmt.nAvgBytesPerSec = pHdr->byteRate;
 
-   m_dataSize = m_vecPcm.size();  // 记录数据大小
-   m_readPos = 0;  // 初始化读取位置为 0
-   m_playPos = 0;  // 初始化播放位置为 0
+   p->m_dataSize = p->m_vecPcm.size();  // 记录数据大小
+   p->m_readPos = 0;  // 初始化读取位置为 0
+   p->m_playPos = 0;  // 初始化播放位置为 0
 
-   const size_t blockSize = m_fmt.nBlockAlign * 2048;      // 缓冲区大小 ~46ms/块
-   m_vecBlocks.resize(m_iBlockCount);                      
-   for (auto& block : m_vecBlocks) block.vecData.resize(blockSize);
+   const size_t blockSize = p->m_fmt.nBlockAlign * 2048;      // 缓冲区大小 ~46ms/块
+   p->m_vecBlocks.resize(p->m_iBlockCount);
+   for (auto& block : p->m_vecBlocks) block.vecData.resize(blockSize);
 
-   MMRESULT res = waveOutOpen(&m_hWaveOut,WAVE_MAPPED,&m_fmt,
-      (DWORD_PTR)&CAudioPlayer::WaveOutProc,(DWORD_PTR)this,CALLBACK_FUNCTION);
+   MMRESULT res = waveOutOpen(&p->m_hWaveOut,WAVE_MAPPED,&p->m_fmt,
+      (DWORD_PTR)&Impl::WaveOutProc,(DWORD_PTR)p,CALLBACK_FUNCTION);
    // 部分机器 WAVE_MAPPER 映射损坏（报 BADDEVICEID），此时退回枚举设备逐个试开，
    // 第一个接受该格式的即用
    if (res != MMSYSERR_NOERROR)
    {
       const UINT iDevCount = waveOutGetNumDevs();
       for (UINT id = 0; id < iDevCount && res != MMSYSERR_NOERROR; ++id)
-         res = waveOutOpen(&m_hWaveOut,id,&m_fmt,
-            (DWORD_PTR)&CAudioPlayer::WaveOutProc,(DWORD_PTR)this,CALLBACK_FUNCTION);
+         res = waveOutOpen(&p->m_hWaveOut,id,&p->m_fmt,
+            (DWORD_PTR)&Impl::WaveOutProc,(DWORD_PTR)p,CALLBACK_FUNCTION);
    }
    if (res == WAVERR_BADFORMAT)
       return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;   // 所有设备都不支持该格式
@@ -117,41 +193,26 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const wchar_t* filePath){
    else if (res != MMSYSERR_NOERROR)
       return AudioSdk::AudioSdkState::DEVICE_NOT_FOUND;   // 设备无法打开
 
-   InitializeCriticalSection(&m_cs);       // 初始化临界区，用于保护缓冲区访问
-   m_csInit = true;
-   m_hWakeEvent = CreateEvent(NULL, FALSE, FALSE,NULL);
-   m_hStopEvent = CreateEvent(NULL, TRUE, FALSE,NULL);
+   InitializeCriticalSection(&p->m_cs);       // 初始化临界区，用于保护缓冲区访问
+   p->m_csInit = true;
+   p->m_hWakeEvent = CreateEvent(NULL, FALSE, FALSE,NULL);
+   p->m_hStopEvent = CreateEvent(NULL, TRUE, FALSE,NULL);
 
-   m_isPlaying = true;
-   m_isPaused = false;
+   p->m_isPlaying = true;
+   p->m_isPaused = false;
 
-   m_hThread = CreateThread(NULL,0,[](LPVOID arg)->DWORD{
-      static_cast<CAudioPlayer*>(arg)->FeedLoop();
+   p->m_hThread = CreateThread(NULL,0,[](LPVOID arg)->DWORD{
+      static_cast<Impl*>(arg)->FeedLoop();
       return 0;
-   },this,0,NULL);
+   },p,0,NULL);
    return AudioSdk::AudioSdkState::NONE;
-}
-
-/**
-   @brief : 音频播放设备回调函数
-   @param : hWaveOut - 音频设备句柄
-   @param : uMsg - 消息类型
-   @param : dwInstanceData - 实例数据指针
-   @param : wParam - 消息参数 1
-   @param : lParam - 消息参数 2
-*/
-void CALLBACK CAudioPlayer::WaveOutProc(HWAVEOUT hWaveOut,
-   UINT uMsg, DWORD_PTR dwInstanceData, DWORD_PTR wParam, DWORD_PTR lParam){
-   if (uMsg == WOM_DONE){                            // 工作块播放完成
-      SetEvent(((CAudioPlayer*)dwInstanceData)->m_hWakeEvent);   // 唤醒播放线程
-   }
 }
 
 /**
    @brief : 音频播放线程
 */
-void CAudioPlayer::FeedLoop(){
-   
+void CAudioPlayer::Impl::FeedLoop(){
+
    EnterCriticalSection(&m_cs);
    for(int iN = 0; iN < m_iBlockCount; iN++) PreparePlay();
    LeaveCriticalSection(&m_cs);
@@ -196,19 +257,19 @@ void CAudioPlayer::FeedLoop(){
          break;
       }
    }
-};
+}
 
 /**
    @brief : 准备下一块数据，播放
 */
-bool CAudioPlayer::PreparePlay(){
+bool CAudioPlayer::Impl::PreparePlay(){
    for(auto& block : m_vecBlocks){
       if (block.isDevice) continue;          // 寻找闲置数据块
       if(m_readPos >= m_dataSize) return false;  // 已读取完数据，返回
-      
+
       size_t szData = min(block.vecData.size(), m_dataSize - m_readPos);             // 尾块可能不足一整块
       block.vecData.assign(m_vecPcm.begin() + m_readPos, m_vecPcm.begin() + m_readPos + szData);   // 只取当前块数据
-      m_readPos += szData;                  
+      m_readPos += szData;
 
       block.waveHdr = {};                             // 清楚旧数据
       block.waveHdr.lpData = (LPSTR)block.vecData.data();
@@ -225,7 +286,7 @@ bool CAudioPlayer::PreparePlay(){
 /**
    @brief : 清理设备设备资源
 */
-void CAudioPlayer::CleanUpDevice(){
+void CAudioPlayer::Impl::CleanUpDevice(){
    if (m_hWaveOut) {
       waveOutReset(m_hWaveOut);                     // 缓冲区状态退回
       for(auto& block : m_vecBlocks)
@@ -248,85 +309,95 @@ void CAudioPlayer::CleanUpDevice(){
       m_csInit = false;
    }
 }
+
 /**
    @brief : 跳转播放位置
    @param : posBytes - 跳转位置，单位字节
    @return 音频播放状态
 */
-AudioSdk::AudioSdkState CAudioPlayer::Seek(DWORD posBytes){
-   if (!m_isPlaying) return AudioSdk::AudioSdkState::INVALID_PARAMETER;
+AudioSdk::AudioSdkState CAudioPlayer::Seek(uint32_t posBytes){
+   Impl* p = m_impl;
+   if (!p->m_isPlaying) return AudioSdk::AudioSdkState::INVALID_PARAMETER;
 
-   auto align = m_fmt.nBlockAlign;
+   auto align = p->m_fmt.nBlockAlign;
    if (align) posBytes -= posBytes % align;        // 帧对齐
-   if (posBytes >= m_dataSize) posBytes = (DWORD)m_dataSize;
+   if (posBytes >= p->m_dataSize) posBytes = (uint32_t)p->m_dataSize;
 
-   waveOutPause(m_hWaveOut);          // 暂停播放
-   EnterCriticalSection(&m_cs);
-   waveOutReset(m_hWaveOut);          // 清掉"等锁期间播放线程新写的块"
+   waveOutPause(p->m_hWaveOut);          // 暂停播放
+   EnterCriticalSection(&p->m_cs);
+   waveOutReset(p->m_hWaveOut);          // 清掉"等锁期间播放线程新写的块"
 
-   for (auto& block : m_vecBlocks){
+   for (auto& block : p->m_vecBlocks){
       if (block.waveHdr.dwFlags & WHDR_PREPARED)
-         waveOutUnprepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
+         waveOutUnprepareHeader(p->m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
    }
-   for (auto& block : m_vecBlocks) {
+   for (auto& block : p->m_vecBlocks) {
       block.isDevice = false;              // 全部标记闲置
       block.waveHdr.dwFlags = 0;           // 清 DONE/PREPARED 位, 供下次复用
    }
-   m_readPos = posBytes;
-   LeaveCriticalSection(&m_cs);
+   p->m_readPos = posBytes;
+   LeaveCriticalSection(&p->m_cs);
 
-   SetEvent(m_hWakeEvent);                            // 唤醒播放线程, 从新位置补块
-   if (m_isPaused) waveOutPause(m_hWaveOut);             // 若原先暂停，继续暂停
+   SetEvent(p->m_hWakeEvent);                            // 唤醒播放线程, 从新位置补块
+   if (p->m_isPaused) waveOutPause(p->m_hWaveOut);       // 若原先暂停，继续暂停
    return AudioSdk::AudioSdkState::NONE;
 }
 
+/**
+   @brief : 暂停播放
+*/
 void CAudioPlayer::PausePlay(){             // 暂停播放
-   if (m_isPaused || !m_isPlaying) return;
-   waveOutPause(m_hWaveOut);
-   m_isPaused = true;
+   Impl* p = m_impl;
+   if (p->m_isPaused || !p->m_isPlaying) return;
+   waveOutPause(p->m_hWaveOut);
+   p->m_isPaused = true;
 }
-   
+
+/**
+   @brief : 继续播放
+*/
 void CAudioPlayer::ResumePlay(){             // 继续播放
-   if (!m_isPaused || !m_isPlaying) return;
-   waveOutRestart(m_hWaveOut);
-   m_isPaused = false;
+   Impl* p = m_impl;
+   if (!p->m_isPaused || !p->m_isPlaying) return;
+   waveOutRestart(p->m_hWaveOut);
+   p->m_isPaused = false;
 }
 
 /**
    @brief : 停止播放
 */
 void CAudioPlayer::StopPlay(){             // 停止播放
-   if (!m_isPlaying) {CleanUpDevice(); return;}
-   SetEvent(m_hStopEvent);
-   if (m_hThread){                     // 等待线程结束
-      WaitForSingleObject(m_hThread, INFINITE);
-      CloseHandle(m_hThread);
-      m_hThread = NULL;
+   Impl* p = m_impl;
+   if (!p->m_isPlaying) { p->CleanUpDevice(); return; }
+   SetEvent(p->m_hStopEvent);
+   if (p->m_hThread){                     // 等待线程结束
+      WaitForSingleObject(p->m_hThread, INFINITE);
+      CloseHandle(p->m_hThread);
+      p->m_hThread = NULL;
    }
-   CleanUpDevice();
-   m_isPaused = false;
-   m_isPlaying = false;
+   p->CleanUpDevice();
+   p->m_isPaused = false;
+   p->m_isPlaying = false;
 }
-
 
 /**
    @brief : 获取当前播放位置
 */
-DWORD CAudioPlayer::GetPlayPos() const{
-   return (DWORD)m_playPos;
+uint32_t CAudioPlayer::GetPlayPos() const{
+   return static_cast<uint32_t>(m_impl->m_playPos);
 }
 
-DWORD CAudioPlayer::GetTotalPos() const{
-   return (DWORD)m_dataSize;        
+uint32_t CAudioPlayer::GetTotalPos() const{
+   return static_cast<uint32_t>(m_impl->m_dataSize);
 }
 
 bool CAudioPlayer::IsPlaying() const{
-   return m_isPlaying;
+   return m_impl->m_isPlaying;
 }
 
 bool CAudioPlayer::IsPaused() const{
-   return m_isPaused;
-}    
+   return m_impl->m_isPaused;
+}
 bool CAudioPlayer::GetIsPaused() const{
-   return m_isPaused;
+   return m_impl->m_isPaused;
 }
