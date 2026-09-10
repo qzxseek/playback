@@ -1,17 +1,9 @@
 /* @Created On : 2026/9/4
    @Author : 孟源
    @note : Win32 音频 UI 主窗口(类封装: 主窗口 + 控件句柄 + 消息处理)
-   设计要点:
-   - 程序入口 wWinMain 放 main.cpp(全局函数), 本类只管"窗口 + 控件 + 消息"。
-   - 窗口过程 WndProc 必须是【静态】成员(系统回调签名不能带 this),
-     它通过全局指针 g_pMain 转发到实例的 HandleMessage(见 main.cpp 顶部)。
-   - CAudioPlayer / CAudioRecorder 是【本类成员】(生命周期与窗口一致)——
-     这样播放状态才能跨按钮点击保持, 进度条才能实时轮询/拖拽跳转。
 */
-#pragma once                       // 防止头文件被重复包含
+#pragma once                       
 
-// 必须先定义 UNICODE 再包含 windows.h, 否则 CreateWindowEx 等会展开成
-// 窄字符版 CreateWindowExA, 与宽字符串 L"..." 冲突 → C2664(你第 10 行正是这个)。
 #ifndef UNICODE
 #define UNICODE
 #endif
@@ -20,7 +12,7 @@
 #endif
 
 #include <windows.h>
-#include <commdlg.h>       // GetOpenFileNameW(打开文件对话框)
+#include <commdlg.h>
 #include <string>
 
 #include "audio_sdk/windows/audio_player.h"
