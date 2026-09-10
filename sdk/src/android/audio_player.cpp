@@ -12,6 +12,7 @@
 
 #include <aaudio/AAudio.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -35,7 +36,9 @@ struct CAudioPlayer::Impl
 
     std::vector<uint8_t> m_vecPcm;    // 明文 PCM(解密后驻留内存)
     size_t   m_dataSize = 0;          // PCM 总字节数
-    size_t   m_readPos  = 0;          // 已喂给设备的字节游标(流式核心)
+    std::atomic<size_t> m_readPos{0};
+    // 回调自然播完置位(true 表示已喂完并返回 STOP), 供 IsPlaying() 如实上报
+    std::atomic<bool> m_reachedEnd{false};
     int32_t  m_channels = CHANNELS;
     int32_t  m_bytesPerFrame = CHANNELS * (BITS_PER_SAMPLE / 8);
 
@@ -114,7 +117,8 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
         CEncryptedFormat::XorCrypt(p->m_vecPcm.data(), p->m_vecPcm.size());
 
     p->m_dataSize = p->m_vecPcm.size();
-    p->m_readPos  = 0;                                   // 流式游标从头开始
+    p->m_readPos.store(0, std::memory_order_release);    // 流式游标从头开始
+    p->m_reachedEnd.store(false, std::memory_order_release);
     p->m_channels = pHdr->numChannels ? pHdr->numChannels : CHANNELS;
     p->m_bytesPerFrame = p->m_channels * (pHdr->bitsPerSample / 8);
 
@@ -163,7 +167,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
 */
 aaudio_data_callback_result_t CAudioPlayer::Impl::DataCallback(
         AAudioStream*, void* userData, void* audioData, int32_t numFrames) {
-   return reinterpret_cast<Impl*>(userData)->OnAudioReady(audioData, numFrames);
+    return reinterpret_cast<Impl*>(userData)->OnAudioReady(audioData, numFrames);
 }
 
 /**
@@ -171,10 +175,10 @@ aaudio_data_callback_result_t CAudioPlayer::Impl::DataCallback(
 */
 void CAudioPlayer::Impl::ErrorCallback(
         AAudioStream* stream, void* userData, aaudio_result_t error) {
-   auto* p = reinterpret_cast<Impl*>(userData);
-   // 设备被拔 / 出错: 只请求停止, 不在回调线程里 close(由 StopPlay 兜底关闭)
-   if (error == AAUDIO_ERROR_DISCONNECTED && p->m_stream)
-      AAudioStream_requestStop(stream);
+    auto* p = reinterpret_cast<Impl*>(userData);
+    // 设备被拔 / 出错: 只请求停止, 不在回调线程里 close(由 StopPlay 兜底关闭)
+    if (error == AAUDIO_ERROR_DISCONNECTED && p->m_stream)
+        AAudioStream_requestStop(stream);
 }
 
 /**
@@ -183,61 +187,68 @@ void CAudioPlayer::Impl::ErrorCallback(
 */
 aaudio_data_callback_result_t CAudioPlayer::Impl::OnAudioReady(
         void* audioData, int32_t numFrames) {
-   const int32_t want = numFrames * m_bytesPerFrame;   // 设备本次要的字节数
-   auto* out = static_cast<uint8_t*>(audioData);
+    const int32_t want = numFrames * m_bytesPerFrame;   // 设备本次要的字节数
+    auto* out = static_cast<uint8_t*>(audioData);
 
-   if (m_readPos >= m_dataSize){                        // 已喂完
-      std::memset(out, 0, static_cast<size_t>(want));   // 尾部补静音
-      return AAUDIO_CALLBACK_RESULT_STOP;               // 让 AAudio 自动停流
-   }
+    size_t pos = m_readPos.load(std::memory_order_acquire);
 
-   const size_t remain = m_dataSize - m_readPos;
-   const size_t n = std::min(static_cast<size_t>(want), remain);
-   std::memcpy(out, m_vecPcm.data() + m_readPos, n);
-   m_readPos += n;                                      // 游标推进
+    if (pos >= m_dataSize){                              // 已喂完
+        std::memset(out, 0, static_cast<size_t>(want));   // 尾部补静音
+        m_reachedEnd.store(true, std::memory_order_release);  // 通知 UI: 自然播完了
+        return AAUDIO_CALLBACK_RESULT_STOP;               // 让 AAudio 自动停流
+    }
 
-   if (n < static_cast<size_t>(want))
-      std::memset(out + n, 0, static_cast<size_t>(want) - n);  // 末尾不足补静音
+    const size_t remain = m_dataSize - pos;              // 与 pos 同源, 保证不越界
+    const size_t n = std::min(static_cast<size_t>(want), remain);
+    std::memcpy(out, m_vecPcm.data() + pos, n);
 
-   return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    // CAS 推进游标: 期间若 Seek 已经改过 m_readPos, 这次 CAS 失败即放弃推进,
+    m_readPos.compare_exchange_strong(pos, pos + n, std::memory_order_acq_rel);
+
+    if (n < static_cast<size_t>(want))
+        std::memset(out + n, 0, static_cast<size_t>(want) - n);  // 末尾不足补静音
+
+    return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
 /**
    @brief : 停流 + 关流 + 清状态(StopPlay 与析构共用)
 */
 void CAudioPlayer::Impl::CleanUpStream(){
-   m_isPlaying = false;
-   m_isPaused  = false;
-   if (m_stream){
-      AAudioStream_requestStop(m_stream);
-      AAudioStream_close(m_stream);
-      m_stream = nullptr;
-   }
-   m_vecPcm.clear();
-   m_dataSize = 0;
-   m_readPos  = 0;
-}
+    m_isPlaying = false;
+    m_isPaused  = false;
+    m_reachedEnd.store(false, std::memory_order_release);
+    if (m_stream){
+        AAudioStream_requestStop(m_stream);
+        // close() 会阻塞到回调线程退出, 之后才能安全动 m_vecPcm
+        AAudioStream_close(m_stream);
+        m_stream = nullptr;
+    }
+    m_vecPcm.clear();
+    m_dataSize = 0;
+    m_readPos.store(0, std::memory_order_release);
+    }
 
-void CAudioPlayer::PausePlay(){             // 暂停播放
-   Impl* p = m_impl;
-   if (!p->m_isPlaying || p->m_isPaused || !p->m_stream) return;
-   // 输出流支持真正的 pause: 保留流位置, Resume 后从原处继续
-   AAudioStream_requestPause(p->m_stream);
-   p->m_isPaused = true;
+    void CAudioPlayer::PausePlay(){             // 暂停播放
+    Impl* p = m_impl;
+    if (!p->m_isPlaying || p->m_isPaused || !p->m_stream) return;
+    // 输出流支持真正的 pause: 保留流位置, Resume 后从原处继续
+    AAudioStream_requestPause(p->m_stream);
+    p->m_isPaused = true;
 }
 
 void CAudioPlayer::ResumePlay(){             // 继续播放
-   Impl* p = m_impl;
-   if (!p->m_isPlaying || !p->m_isPaused || !p->m_stream) return;
-   AAudioStream_requestStart(p->m_stream);   // 读游标 m_readPos 还在原处, 接着喂
-   p->m_isPaused = false;
+    Impl* p = m_impl;
+    if (!p->m_isPlaying || !p->m_isPaused || !p->m_stream) return;
+    AAudioStream_requestStart(p->m_stream);   // 读游标 m_readPos 还在原处, 接着喂
+    p->m_isPaused = false;
 }
 
 /**
    @brief : 停止播放
 */
 void CAudioPlayer::StopPlay(){
-   m_impl->CleanUpStream();
+    m_impl->CleanUpStream();
 }
 
 /**
@@ -246,38 +257,41 @@ void CAudioPlayer::StopPlay(){
    @return : 播放状态
 */
 AudioSdk::AudioSdkState CAudioPlayer::Seek(uint32_t posBytes){
-   Impl* p = m_impl;
-   if (!p->m_isPlaying) return AudioSdk::AudioSdkState::INVALID_PARAMETER;
+    Impl* p = m_impl;
+    if (!p->m_isPlaying) return AudioSdk::AudioSdkState::INVALID_PARAMETER;
 
-   if (p->m_bytesPerFrame > 0)
-      posBytes -= posBytes % static_cast<uint32_t>(p->m_bytesPerFrame);   // 帧对齐
-   if (posBytes > p->m_dataSize) posBytes = static_cast<uint32_t>(p->m_dataSize);
+    if (p->m_bytesPerFrame > 0)
+        posBytes -= posBytes % static_cast<uint32_t>(p->m_bytesPerFrame);   // 帧对齐
+    if (posBytes > p->m_dataSize) posBytes = static_cast<uint32_t>(p->m_dataSize);
 
-   p->m_readPos = posBytes;                    // 改游标
-   // 设备内部可能已预取旧位置的数据: 只改游标不冲刷, 会先播一段旧内容再跳
-   AAudioStream_requestFlush(p->m_stream);     // 冲刷掉设备缓冲里未播的数据
-   return AudioSdk::AudioSdkState::NONE;
+    p->m_readPos.store(posBytes, std::memory_order_release);   // 原子改游标
+    // 设备内部可能已预取旧位置的数据: 只改游标不冲刷, 会先播一段旧内容再跳
+    AAudioStream_requestFlush(p->m_stream);     // 冲刷掉设备缓冲里未播的数据
+    return AudioSdk::AudioSdkState::NONE;
 }
 
 /**
    @brief : 获取当前播放位置(已喂给设备的字节数, UI 轮询它画进度条)
 */
 uint32_t CAudioPlayer::GetPlayPos() const{
-   return static_cast<uint32_t>(m_impl->m_readPos);
+    return static_cast<uint32_t>(m_impl->m_readPos.load(std::memory_order_acquire));
 }
 
 uint32_t CAudioPlayer::GetTotalPos() const{
-   return static_cast<uint32_t>(m_impl->m_dataSize);
+    return static_cast<uint32_t>(m_impl->m_dataSize);
 }
 
 bool CAudioPlayer::IsPlaying() const{
-   return m_impl->m_isPlaying;
+   // 自然播完(回调已返回 STOP)后 m_isPlaying 还是 true、流也还没关,
+   // 此时 UI 尚未调 StopPlay, 这里必须如实返回 false, 否则 UI 会一直以为还在播
+    return m_impl->m_isPlaying &&
+          !m_impl->m_reachedEnd.load(std::memory_order_acquire);
 }
 
 bool CAudioPlayer::IsPaused() const{
-   return m_impl->m_isPaused;
+    return m_impl->m_isPaused;
 }
 
 bool CAudioPlayer::GetIsPaused() const{
-   return m_impl->m_isPaused;
+    return m_impl->m_isPaused;
 }
