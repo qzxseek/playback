@@ -4,8 +4,8 @@
 */
 #pragma once
 
-#include "audio_sdk/common/audio_types.h"
-#include "audio_sdk/common/wav_format.h"
+#include "audio_sdk/audio_types.h"
+#include "audio_sdk/wav_format.h"
 #include <cstddef>
 #include <cstdint>
 

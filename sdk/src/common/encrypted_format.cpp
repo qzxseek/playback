@@ -2,8 +2,8 @@
    @Author : 孟源
    @note : 加密格式实现
 */
-#include "audio_sdk/common/encrypted_format.h"
-#include "audio_sdk/common/wav_format.h"
+#include "audio_sdk/encrypted_format.h"
+#include "audio_sdk/wav_format.h"
 
 #include <cstring>
 #include <filesystem>

@@ -15,10 +15,10 @@
 #include <fstream>
 #include <vector>
 
-#include "audio_sdk/common/audio_types.h"     // SAMPLE_RATE 等宏 + AudioSdkState
+#include "audio_sdk/audio_types.h"     // SAMPLE_RATE 等宏 + AudioSdkState
 #include "audio_sdk/audio_recorder.h"  // CAudioRecorder
-#include "audio_sdk/common/encrypted_format.h" // IsAencFile / kAencPrefixSize（录音落盘为 .aenc）
-#include "audio_sdk/common/wav_format.h"      // WavHeader（校验落盘文件）
+#include "audio_sdk/encrypted_format.h" // IsAencFile / kAencPrefixSize（录音落盘为 .aenc）
+#include "audio_sdk/wav_format.h"      // WavHeader（校验落盘文件）
 
 // 读文件大小；不存在返回 0
 static unsigned long long GetFileSize(const wchar_t* filePath)

@@ -2,7 +2,7 @@
    @Author : 孟源
    @note : WAV 文件校验类
 */
-#include "audio_sdk/common/wav_validate.h"
+#include "audio_sdk/wav_validate.h"
 
 #include <cstring>
 #include <cstdint>
