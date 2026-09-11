@@ -164,11 +164,10 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
  * @brief 切换是否加密保存(录制中不生效)
  * @return 切换后的加密状态; 录制中返回 false(不允许切换)
  */
-bool CAudioRecorder::SetAencEncrypt() {
+void CAudioRecorder::SetAencEncrypt() {
     Impl* p = m_impl;
-    if (p->m_isRecording) return false;       // 录制中不许切, 和 Windows 一致
+    if (p->m_isRecording) return;       // 录制中不许切, 和 Windows 一致
     p->m_isAencEncrypt = !p->m_isAencEncrypt;
-    return p->m_isAencEncrypt;
 }
 
 bool CAudioRecorder::GetAencEncrypt() const { return m_impl->m_isAencEncrypt; }

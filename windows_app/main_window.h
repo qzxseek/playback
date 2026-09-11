@@ -15,8 +15,7 @@
 #include <commdlg.h>
 #include <string>
 
-#include "audio_player.h"      // SDK 接口头(平铺在 include/, 由 CMake 加入搜索路径)
-#include "audio_recorder.h"
+#include "include/audio_sdk.h"
 
 // ---------------- 控件 / 消息 ID ----------------
 #define BTN_RECORD_START_STOP          1001   // 开始录音 / 停止录音(同一个按钮切换文字)

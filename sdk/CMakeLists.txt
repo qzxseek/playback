@@ -38,6 +38,9 @@ target_include_directories(audio_sdk PUBLIC
 )
 target_link_libraries(audio_sdk PUBLIC ${PLATFORM_LIBS})
 
+# 告诉 audio_export.h: 现在编的是 SDK 本体 → AUDIO_API 展开成 dllexport
+target_compile_definitions(audio_sdk PRIVATE AUDIO_SDK_BUILD)
+
 # Windows 专用自测程序(依赖 winmm 设备层, Android 下不构建) 
 if(WIN32)
     # 录制测试：正常多 TU 链接（CAudioRecorder 类，回调走 CALLBACK_FUNCTION，无需窗口）。
@@ -50,6 +53,8 @@ if(WIN32)
     target_include_directories(test_win_record PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
+    # 测试程序把 SDK 源码静态编进来, 既不是导入也不是导出 → AUDIO_API 置空
+    target_compile_definitions(test_win_record PRIVATE AUDIO_SDK_STATIC)
     target_link_libraries(test_win_record PRIVATE winmm)
 
     # 播放测试：正常多 TU 链接（CAudioPlayer 类；wav_format 提供测试音生成用的 SaveWavFile）。
@@ -63,5 +68,7 @@ if(WIN32)
     target_include_directories(test_win_play PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
+    # 同上: 静态编译 SDK 源码, 不要 dllimport/dllexport
+    target_compile_definitions(test_win_play PRIVATE AUDIO_SDK_STATIC)
     target_link_libraries(test_win_play PRIVATE winmm)
 endif()

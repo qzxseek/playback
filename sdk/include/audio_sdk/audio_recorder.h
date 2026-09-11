@@ -7,9 +7,11 @@
 #pragma once
 
 #include "audio_sdk/audio_types.h"   // AudioSdkState
+#include "audio_sdk/audio_export.h"
+
 #include <cstddef>
 
-class CAudioRecorder
+class AUDIO_API CAudioRecorder
 {
 public:
     CAudioRecorder();

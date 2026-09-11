@@ -17,6 +17,8 @@
 #define BUFFER_COUNT    4
 #define BUFFER_SIZE     (SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE/8) / 10) // 100ms
 
+#include "audio_sdk/audio_export.h"
+
 #include <windows.h>
 #endif
 
