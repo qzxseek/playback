@@ -41,6 +41,7 @@ struct CAudioPlayer::Impl
     std::atomic<bool> m_reachedEnd{false};
     int32_t  m_channels = CHANNELS;
     int32_t  m_bytesPerFrame = CHANNELS * (BITS_PER_SAMPLE / 8);
+    uint32_t m_byteRate = 0;          // 每秒字节数(从文件头取, 供字节→毫秒换算)
 
     bool m_isPlaying = false;
     bool m_isPaused  = false;
@@ -121,6 +122,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
     p->m_reachedEnd.store(false, std::memory_order_release);
     p->m_channels = pHdr->numChannels ? pHdr->numChannels : CHANNELS;
     p->m_bytesPerFrame = p->m_channels * (pHdr->bitsPerSample / 8);
+    p->m_byteRate = pHdr->byteRate;   // 供 GetPlayPosMs/GetTotalPosMs 换算
 
     AAudioStreamBuilder* builder = nullptr;
     aaudio_result_t result = AAudio_createStreamBuilder(&builder);
@@ -279,6 +281,28 @@ uint32_t CAudioPlayer::GetPlayPos() const{
 
 uint32_t CAudioPlayer::GetTotalPos() const{
     return static_cast<uint32_t>(m_impl->m_dataSize);
+}
+
+/**
+   @brief : 当前播放位置(毫秒) —— 字节 ÷ 每秒字节数
+   @return : 毫秒; 还没加载文件(字节率为 0)返回 0
+*/
+uint32_t CAudioPlayer::GetPlayPosMs() const{
+    const uint32_t byteRate = m_impl->m_byteRate;
+    if (byteRate == 0) return 0;                       // 未加载文件, 别除零
+    // 先乘后除(乘 1000ULL 避免 32 位溢出), 拿到的才是毫秒
+    const size_t pos = m_impl->m_readPos.load(std::memory_order_acquire);
+    return static_cast<uint32_t>(pos * 1000ULL / byteRate);
+}
+
+/**
+   @brief : 总时长(毫秒)
+   @return : 毫秒; 还没加载文件(字节率为 0)返回 0
+*/
+uint32_t CAudioPlayer::GetTotalPosMs() const{
+    const uint32_t byteRate = m_impl->m_byteRate;
+    if (byteRate == 0) return 0;
+    return static_cast<uint32_t>(m_impl->m_dataSize * 1000ULL / byteRate);
 }
 
 bool CAudioPlayer::IsPlaying() const{

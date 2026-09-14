@@ -174,4 +174,15 @@ bool CAudioRecorder::GetAencEncrypt() const { return m_impl->m_isAencEncrypt; }
 
 bool CAudioRecorder::GetIsPaused() const { return m_impl->m_isPaused; }
 
-size_t CAudioRecorder::GetRecordedBytes() const { return m_impl->m_vecPcmData.size(); }
+/**
+ * @brief 已录制时长(毫秒) —— 已录字节 ÷ 每秒字节数
+ * @return 毫秒
+ * @note 录音格式固定(见 audio_types.h), 所以字节率直接用常量算,
+ *       与落盘 WAV 头里 FillHeader 写的 byteRate 是同一个表达式。
+ */
+uint32_t CAudioRecorder::GetRecordedMs() const {
+    const uint32_t byteRate = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8);
+    if (byteRate == 0) return 0;
+    // 先乘后除(乘 1000ULL 避免 32 位溢出), 拿到的才是毫秒
+    return static_cast<uint32_t>(m_impl->m_vecPcmData.size() * 1000ULL / byteRate);
+}

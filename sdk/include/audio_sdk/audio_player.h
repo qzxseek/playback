@@ -30,6 +30,8 @@ public:
     AudioSdk::AudioSdkState Seek(uint32_t posBytes);   // 设置播放位置(字节)
     uint32_t GetPlayPos() const;        // 获取当前播放位置(字节)
     uint32_t GetTotalPos() const;       // 获取总播放长度(字节)
+    uint32_t GetPlayPosMs() const;      // 当前播放位置(毫秒)
+    uint32_t GetTotalPosMs() const;     // 总时长(毫秒); 未加载文件返回 0
     bool GetIsPaused() const;           // 获取是否暂停播放
     bool IsPlaying() const;             // 是否正在播放
     bool IsPaused() const;              // 是否暂停

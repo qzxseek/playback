@@ -70,6 +70,16 @@ AUDIO_API uint32_t AudioSdk_PlayerGetTotalPos(void* handle) {
     return handle ? AsPlayer(handle)->GetTotalPos() : 0;
 }
 
+// 当前播放位置(毫秒) —— UI 显示 mm:ss.d 直接用, 不用自己读文件头算字节率
+AUDIO_API uint32_t AudioSdk_PlayerGetPlayPosMs(void* handle) {
+    return handle ? AsPlayer(handle)->GetPlayPosMs() : 0;
+}
+
+// 总时长(毫秒); 未加载文件返回 0
+AUDIO_API uint32_t AudioSdk_PlayerGetTotalPosMs(void* handle) {
+    return handle ? AsPlayer(handle)->GetTotalPosMs() : 0;
+}
+
 // 1=在播, 0=否
 AUDIO_API int AudioSdk_PlayerIsPlaying(void* handle) {
     return (handle && AsPlayer(handle)->IsPlaying()) ? 1 : 0;
@@ -119,8 +129,9 @@ AUDIO_API int AudioSdk_RecorderGetIsPaused(void* handle) {      // 1=已暂停
     return (handle && AsRecorder(handle)->GetIsPaused()) ? 1 : 0;
 }
 
-AUDIO_API size_t AudioSdk_RecorderGetRecordedBytes(void* handle) {   // 已录字节
-    return handle ? AsRecorder(handle)->GetRecordedBytes() : 0;
+// 已录时长(毫秒) —— UI 显示录音时长直接用
+AUDIO_API uint32_t AudioSdk_RecorderGetRecordedMs(void* handle) {
+    return handle ? AsRecorder(handle)->GetRecordedMs() : 0;
 }
 
 }

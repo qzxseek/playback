@@ -391,6 +391,27 @@ uint32_t CAudioPlayer::GetTotalPos() const{
    return static_cast<uint32_t>(m_impl->m_dataSize);
 }
 
+/**
+ * @brief 当前播放位置(毫秒) —— 字节 ÷ 每秒字节数
+ * @return 毫秒; 还没加载文件(字节率为 0)返回 0
+ */
+uint32_t CAudioPlayer::GetPlayPosMs() const{
+   const uint32_t byteRate = m_impl->m_fmt.nAvgBytesPerSec;
+   if (byteRate == 0) return 0;                       // 未加载文件, 别除零
+   // 先乘后除(乘 1000ULL 避免 32 位溢出), 拿到的才是毫秒
+   return static_cast<uint32_t>(m_impl->m_playPos * 1000ULL / byteRate);
+}
+
+/**
+ * @brief 总时长(毫秒)
+ * @return 毫秒; 还没加载文件(字节率为 0)返回 0
+ */
+uint32_t CAudioPlayer::GetTotalPosMs() const{
+   const uint32_t byteRate = m_impl->m_fmt.nAvgBytesPerSec;
+   if (byteRate == 0) return 0;
+   return static_cast<uint32_t>(m_impl->m_dataSize * 1000ULL / byteRate);
+}
+
 bool CAudioPlayer::IsPlaying() const{
    return m_impl->m_isPlaying;
 }

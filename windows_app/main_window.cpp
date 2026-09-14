@@ -4,8 +4,6 @@
 */
 #include "main_window.h"
 
-#include <cstring>          
-#include <fstream>          
 
 // g_pMain 声明在 main.cpp(WinMain 里 new 出来并赋值)
 // 静态 WndProc 需要它把消息转发回实例
@@ -72,26 +70,15 @@ CMainWindows::~CMainWindows(){
 }
 
 /**
- * @brief 读取音频文件的"每秒字节数"(byteRate), 用于把 字节→时间 换算。
- * @param path 文件路径
- * @return 每秒字节数
+ * @brief 毫秒 → "MM:SS.d" 文本(如 65000ms → 01:05.0)
+ * @param out 输出缓冲(至少 16 字符)
+ * @param ms 毫秒
  */
-static DWORD ReadByteRate(const wchar_t* path){
-    std::ifstream f(path, std::ios::binary);
-    char raw[64] = {};
-    f.read(raw, sizeof(raw));
-    if (f.gcount() < 50)
-        return 0;
-
-    size_t off = 0;
-    if (std::memcmp(raw, "AENC", 4) == 0)
-        off = 6;                       // 剥掉 AENC + version
-
-    // WavHeader 内 byteRate 偏移: RIFF(4)+size(4)+WAVE(4)+fmt(4)+size(4)+
-    // fmtTag(2)+channels(2)+sampleRate(4) = 28
-    DWORD byteRate = 0;
-    std::memcpy(&byteRate, raw + off + 28, sizeof(byteRate));
-    return byteRate;
+static void FormatMs(wchar_t* out, DWORD ms){
+    wsprintfW(out, L"%02u:%02u.%u",
+              (UINT)(ms / 60000),            // 分
+              (UINT)((ms / 1000) % 60),      // 秒
+              (UINT)((ms / 100) % 10));      // 十分之一秒
 }
 
 /**
@@ -373,12 +360,12 @@ bool CMainWindows::OpenFileDialog(HWND hwndOwner){
 
 /**
  * @brief 更新录音时间文字
- * @param tenths 录音时长, 单位 0.1 秒
+ * @param ms 录音时长(毫秒)
  */
-void CMainWindows::UpdateRecTimeUI(DWORD tenths){
-    wchar_t text[32];
-    wsprintfW(text, L"录音时长: %02u:%02u.%u",
-              tenths / 600, (tenths / 10) % 60, tenths % 10);   // mm:ss.d
+void CMainWindows::UpdateRecTimeUI(DWORD ms){
+    wchar_t buf[16], text[40];
+    FormatMs(buf, ms);                       // mm:ss.d
+    wsprintfW(text, L"录音时长: %s", buf);
     SetWindowTextW(m_hLblRecTime, text);
 }
 
@@ -505,9 +492,8 @@ void CMainWindows::OnTimerTick(){
     // 录音中: 已录字节 ×10 ÷ 每秒字节数 = 十分之一秒数
     if (!SdkReady()) return;                       // dll 没加载, 定时器空转就行
     if (m_isRecording){
-        const size_t bytes = m_api.RecorderGetRecordedBytes(m_recorderHandle);
-        const size_t byteRate = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8);
-        UpdateRecTimeUI(static_cast<DWORD>(bytes * 10 / byteRate));
+        // 已录时长同样问 SDK 要毫秒, UI 不自己按采样率算
+        UpdateRecTimeUI(m_api.RecorderGetRecordedMs(m_recorderHandle));
     }
 
     if (!m_isPlaying) return;                     // 没在播就不刷
@@ -530,18 +516,13 @@ void CMainWindows::OnTimerTick(){
  * @brief 更新进度条显示
  */
 void CMainWindows::UpdateProgressUI(){
-    // 时间文字: 字节 → mm:ss.d(每秒字节数从文件头读, 读不到用工程默认 88200)
-    DWORD byteRate = ReadByteRate(m_curFile.c_str());
-    if (byteRate == 0) byteRate = 88200;
-
-    const unsigned __int64 tPosTenth = (unsigned __int64)m_playPosBytes * 10 / byteRate;
-    const unsigned __int64 tTotTenth = (unsigned __int64)m_playTotalBytes * 10 / byteRate;
+    // 时间文字: 直接问 SDK 要毫秒(字节→时间的换算归 SDK, UI 不碰文件、不碰字节率)
+    const DWORD posMs = m_api.PlayerGetPlayPosMs(m_playerHandle);
+    const DWORD totMs = m_api.PlayerGetTotalPosMs(m_playerHandle);
 
     wchar_t now[16], tot[16], text[48];
-    wsprintfW(now, L"%02u:%02u.%u",
-              (UINT)(tPosTenth / 600), (UINT)((tPosTenth / 10) % 60), (UINT)(tPosTenth % 10));
-    wsprintfW(tot, L"%02u:%02u.%u",
-              (UINT)(tTotTenth / 600), (UINT)((tTotTenth / 10) % 60), (UINT)(tTotTenth % 10));
+    FormatMs(now, posMs);
+    FormatMs(tot, totMs);
     wsprintfW(text, L"%s / %s", now, tot);
     SetWindowTextW(m_hLblTime, text);
 

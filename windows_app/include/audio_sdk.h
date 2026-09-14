@@ -25,7 +25,6 @@
 */
 #pragma once
 
-#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -81,6 +80,8 @@ int AudioSdk_PlayerSeek(void* handle, uint32_t posBytes);
 uint32_t AudioSdk_PlayerGetPlayPos(void* handle);    // 已播字节
 uint32_t AudioSdk_PlayerGetTotalPos(void* handle);   // 总字节
 int      AudioSdk_PlayerIsPlaying(void* handle);     // 1=在播, 0=否
+uint32_t AudioSdk_PlayerGetPlayPosMs(void* handle);   // 当前播放位置(毫秒)
+uint32_t AudioSdk_PlayerGetTotalPosMs(void* handle);  // 总时长(毫秒); 未加载文件为 0
 
 // ==================== 录音器 ====================
 
@@ -104,7 +105,7 @@ void AudioSdk_RecorderSetAencEncrypt(void* handle);
 
 int AudioSdk_RecorderGetAencEncrypt(void* handle);       // 1=加密保存
 int AudioSdk_RecorderGetIsPaused(void* handle);          // 1=已暂停
-size_t AudioSdk_RecorderGetRecordedBytes(void* handle);  // 已录字节
+uint32_t AudioSdk_RecorderGetRecordedMs(void* handle);   // 已录时长(毫秒)
 
 int AudioSdk_IsAencFile(const char* utf8Path);
 
@@ -148,6 +149,8 @@ struct AudioSdkApi{
     decltype(&::AudioSdk_PlayerGetPlayPos)        PlayerGetPlayPos  = nullptr;
     decltype(&::AudioSdk_PlayerGetTotalPos)       PlayerGetTotalPos = nullptr;
     decltype(&::AudioSdk_PlayerIsPlaying)              PlayerIsPlaying   = nullptr;
+    decltype(&::AudioSdk_PlayerGetPlayPosMs)      PlayerGetPlayPosMs  = nullptr;
+    decltype(&::AudioSdk_PlayerGetTotalPosMs)     PlayerGetTotalPosMs = nullptr;
 
     // —— 录音器 ——
     decltype(&::AudioSdk_RecorderCreate)                   RecorderCreate            = nullptr;
@@ -158,8 +161,8 @@ struct AudioSdkApi{
     decltype(&::AudioSdk_RecorderSetAencEncrypt)      RecorderSetAencEncrypt    = nullptr;
     decltype(&::AudioSdk_RecorderGetAencEncrypt)       RecorderGetAencEncrypt    = nullptr;
     decltype(&::AudioSdk_RecorderGetIsPaused)          RecorderGetIsPaused       = nullptr;
-    decltype(&::AudioSdk_RecorderGetRecordedBytes)  RecorderGetRecordedBytes  = nullptr;
-    decltype(&::AudioSdk_IsAencFile)             IsAencFile = nullptr;
+    decltype(&::AudioSdk_RecorderGetRecordedMs)   RecorderGetRecordedMs     = nullptr;
+    decltype(&::AudioSdk_IsAencFile)             IsAencFile                = nullptr;
 
     /**
      * @brief 显式加载: LoadLibrary 打开 dll, GetProcAddress 逐个取函数地址。
@@ -190,6 +193,8 @@ struct AudioSdkApi{
         AUDIO_SDK_LOAD(PlayerGetPlayPos,  "AudioSdk_PlayerGetPlayPos");
         AUDIO_SDK_LOAD(PlayerGetTotalPos, "AudioSdk_PlayerGetTotalPos");
         AUDIO_SDK_LOAD(PlayerIsPlaying,   "AudioSdk_PlayerIsPlaying");
+        AUDIO_SDK_LOAD(PlayerGetPlayPosMs,  "AudioSdk_PlayerGetPlayPosMs");
+        AUDIO_SDK_LOAD(PlayerGetTotalPosMs, "AudioSdk_PlayerGetTotalPosMs");
 
         // 录音器
         AUDIO_SDK_LOAD(RecorderCreate,            "AudioSdk_RecorderCreate");
@@ -200,7 +205,7 @@ struct AudioSdkApi{
         AUDIO_SDK_LOAD(RecorderSetAencEncrypt,    "AudioSdk_RecorderSetAencEncrypt");
         AUDIO_SDK_LOAD(RecorderGetAencEncrypt,    "AudioSdk_RecorderGetAencEncrypt");
         AUDIO_SDK_LOAD(RecorderGetIsPaused,       "AudioSdk_RecorderGetIsPaused");
-        AUDIO_SDK_LOAD(RecorderGetRecordedBytes,  "AudioSdk_RecorderGetRecordedBytes");
+        AUDIO_SDK_LOAD(RecorderGetRecordedMs,     "AudioSdk_RecorderGetRecordedMs");
         AUDIO_SDK_LOAD(IsAencFile,                "AudioSdk_IsAencFile");
 
         if (!bOk) { Unload(); return false; }          // 缺符号就整体回滚, 别留半套指针

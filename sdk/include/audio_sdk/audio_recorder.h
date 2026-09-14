@@ -9,7 +9,7 @@
 #include "audio_sdk/audio_types.h"   // AudioSdkState
 #include "audio_sdk/audio_export.h"
 
-#include <cstddef>
+#include <cstdint>
 
 class AUDIO_API CAudioRecorder
 {
@@ -27,7 +27,7 @@ public:
     void SetAencEncrypt();                      // 切换加密开关
     bool GetAencEncrypt() const;                // 当前是否加密保存
     bool GetIsPaused() const;                   // 是否暂停
-    size_t GetRecordedBytes() const;            // 已录制字节数
+    uint32_t GetRecordedMs() const;             // 已录制时长(毫秒)
 
 private:
     struct Impl;                    // 前向声明, 实现细节(winmm/AAudio)全在 .cpp

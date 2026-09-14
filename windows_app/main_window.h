@@ -56,7 +56,7 @@ private:
     // ---------- 录音 ----------
     void AudioStartStopRec();              // 开始 / 停止(按当前状态)
     void AudioPauseResumeRec();
-    void UpdateRecTimeUI(DWORD sec);
+    void UpdateRecTimeUI(DWORD ms);         // 传毫秒, 内部格式化成 mm:ss.d
 
     // ---------- 播放 ----------
     void AudioStartStopPlay();
