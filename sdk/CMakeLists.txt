@@ -25,12 +25,13 @@ else()
     message(FATAL_ERROR "audio_sdk: 暂不支持的平台 ${CMAKE_SYSTEM_NAME}")
 endif()
 
-# SDK 动态库 
+# SDK 动态库
 add_library(audio_sdk SHARED
     ${PLATFORM_SOURCES}
     src/common/wav_format.cpp
     src/common/encrypted_format.cpp
     src/common/wav_validate.cpp
+    src/common/audio_c_api.cpp     # C 接口层(extern "C" 导出, 供 Windows UI 显式加载)
 )
 
 target_include_directories(audio_sdk PUBLIC
@@ -71,4 +72,14 @@ if(WIN32)
     # 同上: 静态编译 SDK 源码, 不要 dllimport/dllexport
     target_compile_definitions(test_win_play PRIVATE AUDIO_SDK_STATIC)
     target_link_libraries(test_win_play PRIVATE winmm)
+endif()
+
+# 发布: 把 dll 拷到 windows_app/resource, 供 UI 工程(独立 CMake 工程, 显式加载)取用
+if(WIN32)
+    add_custom_command(TARGET audio_sdk POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:audio_sdk>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../windows_app/resource/audio_sdk.dll"
+        COMMENT "发布 audio_sdk.dll 到 windows_app/resource"
+    )
 endif()

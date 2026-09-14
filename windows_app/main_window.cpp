@@ -7,8 +7,8 @@
 #include <cstring>          
 #include <fstream>          
 
-// g_pMain 声明在 main.cpp(WinMain 里 new 出来并赋值)。
-// 静态 WndProc 需要它把消息转发回实例。
+// g_pMain 声明在 main.cpp(WinMain 里 new 出来并赋值)
+// 静态 WndProc 需要它把消息转发回实例
 extern CMainWindows* g_pMain;
 
 // 宽字符路径 → UTF-8(设备层 PlayWavFile 现为跨平台 UTF-8 接口, 传给它前要转)
@@ -25,7 +25,33 @@ static std::string WideToUtf8(const std::wstring& wide)
     return utf8;
 }
 
+// UTF-8 → 宽字符(加载失败原因是窄字符, 弹窗要宽字符)
+static std::wstring Utf8ToWide(const char* utf8)
+{
+    if (!utf8 || !*utf8)
+        return {};
+    const int len = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, nullptr, 0);
+    if (len <= 1)
+        return {};
+    std::wstring wide(static_cast<size_t>(len) - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8, -1, &wide[0], len);
+    return wide;
+}
+
 CMainWindows::CMainWindows(){
+    // 显式加载: 只要一个 .dll, 不要导入库(.lib); 换编译器/版本也不受 C++ ABI 影响
+    if (!m_api.Load()){
+        MessageBoxW(nullptr, Utf8ToWide(m_api.LastError()).c_str(),
+                    L"加载 audio_sdk.dll 失败", MB_OK | MB_ICONERROR);
+        return;                       // 句柄保持 nullptr; CreateControls 里会把音频按钮禁掉
+    }
+
+    // 只创建一次, 全程复用(对象里存着设备/缓冲状态, 不能每次操作都新建)
+    m_recorderHandle = m_api.RecorderCreate();
+    m_playerHandle   = m_api.PlayerCreate();
+    if (!m_recorderHandle || !m_playerHandle)
+        MessageBoxW(nullptr, L"创建录音/播放对象失败(内存不足?)",
+                    L"音频 SDK", MB_OK | MB_ICONERROR);
 }
 
 CMainWindows::~CMainWindows(){
@@ -34,6 +60,14 @@ CMainWindows::~CMainWindows(){
     }
     if (m_isPlaying){
         AudioStartStopPlay();
+    }
+    // 先销毁 dll 里的对象, 再卸 dll —— 顺序反了就是往已卸载的代码里跳
+    if (m_api.hModule){
+        m_api.RecorderDestroy(m_recorderHandle);
+        m_api.PlayerDestroy(m_playerHandle);
+        m_recorderHandle = nullptr;
+        m_playerHandle   = nullptr;
+        m_api.Unload();
     }
 }
 
@@ -123,6 +157,12 @@ void CMainWindows::CreateControls(HWND hwnd){
     EnableWindow(m_hBtnRecPause, FALSE);
     EnableWindow(m_hBtnPlay_Start_Stop, FALSE);
     EnableWindow(m_hBtnPlayPause, FALSE);
+
+    // dll 没加载成功: 音频相关按钮全禁掉, 避免点了没反应还去调空函数指针
+    if (!SdkReady()){
+        EnableWindow(m_hBtnRec_Start_Stop, FALSE);
+        EnableWindow(m_hChkEnc, FALSE);
+    }
 }
 
 /**
@@ -192,8 +232,8 @@ LRESULT CMainWindows::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 m_dragging = false;
                 ReleaseCapture();
                 if (m_isPlaying){
-                    m_player.Seek(m_playPosBytes);        // 点哪跳哪 / 拖到哪跳到哪
-                    m_playPosBytes = m_player.GetPlayPos();   // Seek 内部做了帧对齐
+                    m_api.PlayerSeek(m_playerHandle, m_playPosBytes);          // 点哪跳哪 / 拖到哪跳到哪
+                    m_playPosBytes = m_api.PlayerGetPlayPos(m_playerHandle);   // Seek 内部做了帧对齐
                     UpdateProgressUI();
                 }
             }
@@ -222,6 +262,10 @@ LRESULT CMainWindows::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
  * @param iId 按钮 ID
  */
 void CMainWindows::OnCommand(int iId){
+    // dll 没加载成功时, 除"打开文件"(纯 UI 操作)外一律忽略
+    if (iId != BTN_OPEN_FILE && !SdkReady())
+        return;
+
     switch (iId){
     case BTN_RECORD_START_STOP:            // 开始 / 停止录音(同一按钮切换文字)
         AudioStartStopRec();
@@ -231,10 +275,10 @@ void CMainWindows::OnCommand(int iId){
         break;
     case BTN_ENCRYPT:                      // 加密复选框(点击后勾选已自动翻转)
         if (!m_isRecording)
-            m_recorder.SetAencEncrypt();   // 翻转 recorder 内部加密状态
+            m_api.RecorderSetAencEncrypt(m_recorderHandle);   // 翻转 recorder 内部加密状态
         // 让勾选显示与 recorder 真实状态保持一致
         SendMessageW(m_hChkEnc, BM_SETCHECK,
-                     m_recorder.GetAencEncrypt() ? BST_CHECKED : BST_UNCHECKED, 0);
+                     m_api.RecorderGetAencEncrypt(m_recorderHandle) ? BST_CHECKED : BST_UNCHECKED, 0);
         break;
     case BTN_OPEN_FILE:
         OpenFileDialog(m_hwnd);
@@ -254,9 +298,11 @@ void CMainWindows::OnCommand(int iId){
  * @brief 开始 / 停止录音(按当前状态)
  */
 void CMainWindows::AudioStartStopRec(){
+    if (!SdkReady()) return;
     if (!m_isRecording){
         // ---- 开始录音 ----
-        if (m_recorder.StartRecording() != AudioSdk::AudioSdkState::NONE){
+        // C 接口返回的是 int 状态码, 想按名字判断就转回枚举(AudioSdkState 序号两端一致)
+        if (m_api.RecorderStart(m_recorderHandle) != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
             MessageBoxW(m_hwnd, L"打开录音设备失败", L"录音", MB_OK | MB_ICONERROR);
             return;
         }
@@ -273,7 +319,7 @@ void CMainWindows::AudioStartStopRec(){
     }
     else{
         // ---- 停止录音 → 落盘 ----
-        m_recorder.StopRecording();
+        m_api.RecorderStop(m_recorderHandle);
         m_isRecording = false;
         m_recPaused   = false;
         UpdateRecTimeUI(0);                         // 录音时长归零
@@ -284,7 +330,7 @@ void CMainWindows::AudioStartStopRec(){
         EnableWindow(m_hBtnOpen, TRUE);
         if (!m_curFile.empty())
             EnableWindow(m_hBtnPlay_Start_Stop, TRUE);
-        MessageBoxW(m_hwnd, m_recorder.GetAencEncrypt()
+        MessageBoxW(m_hwnd, m_api.RecorderGetAencEncrypt(m_recorderHandle)
                             ? L"录音已保存为加密 output.aenc"
                             : L"录音已保存为明文 output.wav",
                     L"录音", MB_OK | MB_ICONINFORMATION);
@@ -296,8 +342,8 @@ void CMainWindows::AudioStartStopRec(){
  */
 void CMainWindows::AudioPauseResumeRec(){
     if (!m_isRecording) return;
-    m_recorder.PauseResumeRecording();
-    m_recPaused = m_recorder.GetIsPaused();
+    m_api.RecorderPauseResume(m_recorderHandle);
+    m_recPaused = m_api.RecorderGetIsPaused(m_recorderHandle) != 0;
     SetWindowTextW(m_hBtnRecPause, m_recPaused ? L"继续录音" : L"暂停录音");
 }
 
@@ -350,9 +396,10 @@ void CMainWindows::UpdateRecTimeUI(DWORD tenths){
  * @brief 开始 / 停止播放(按当前状态)
  */
 void CMainWindows::AudioStartStopPlay(){
+    if (!SdkReady()) return;
     // ---- 停止播放 ----
     if (m_isPlaying) {
-        m_player.StopPlay();
+        m_api.PlayerStopPlay(m_playerHandle);
         m_isPlaying  = false;
         m_playPaused = false;
         m_playPosBytes = 0;
@@ -378,10 +425,10 @@ void CMainWindows::AudioStartStopPlay(){
         return;
     }
 
-    const AudioSdk::AudioSdkState res = m_player.PlayWavFile(WideToUtf8(m_curFile).c_str());
-    if (res != AudioSdk::AudioSdkState::NONE){
+    const int res = m_api.PlayerPlayFile(m_playerHandle, WideToUtf8(m_curFile).c_str());
+    if (res != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
         const wchar_t* msg = L"播放失败";
-        switch (res){
+        switch (static_cast<AudioSdk::AudioSdkState>(res)){
             case AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED:msg = L"格式不支持"; break;
             case AudioSdk::AudioSdkState::FILE_OPEN_FAILED:msg = L"文件打开失败"; break;
             case AudioSdk::AudioSdkState::DEVICE_BUSY:msg = L"设备被占用"; break;
@@ -395,7 +442,7 @@ void CMainWindows::AudioStartStopPlay(){
     m_isPlaying  = true;
     m_playPaused = false;
     m_dragging   = false;
-    m_playTotalBytes = m_player.GetTotalPos();
+    m_playTotalBytes = m_api.PlayerGetTotalPos(m_playerHandle);
     m_playPosBytes   = 0;
 
     SetWindowTextW(m_hBtnPlay_Start_Stop, L"停止");
@@ -416,12 +463,12 @@ void CMainWindows::AudioStartStopPlay(){
 void CMainWindows::AudioPauseResumePlay(){
     if (!m_isPlaying) return;
     if (m_playPaused){
-        m_player.ResumePlay();
+        m_api.PlayerResumePlay(m_playerHandle);
         m_playPaused = false;
         SetWindowTextW(m_hBtnPlayPause, L"暂停");
     }
     else{
-        m_player.PausePlay();
+        m_api.PlayerPausePlay(m_playerHandle);
         m_playPaused = true;
         SetWindowTextW(m_hBtnPlayPause, L"继续");
     }
@@ -464,8 +511,9 @@ void CMainWindows::InvalidateProgress(){
  */
 void CMainWindows::OnTimerTick(){
     // 录音中: 已录字节 ×10 ÷ 每秒字节数 = 十分之一秒数
+    if (!SdkReady()) return;                       // dll 没加载, 定时器空转就行
     if (m_isRecording){
-        const size_t bytes = m_recorder.GetRecordedBytes();
+        const size_t bytes = m_api.RecorderGetRecordedBytes(m_recorderHandle);
         const size_t byteRate = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8);
         UpdateRecTimeUI(static_cast<DWORD>(bytes * 10 / byteRate));
     }
@@ -473,13 +521,13 @@ void CMainWindows::OnTimerTick(){
     if (!m_isPlaying) return;                     // 没在播就不刷
     if (m_dragging) return;                        // 拖动预览中, 不抢位置
 
-    m_playPosBytes   = m_player.GetPlayPos();
-    m_playTotalBytes = m_player.GetTotalPos();
+    m_playPosBytes   = m_api.PlayerGetPlayPos(m_playerHandle);
+    m_playTotalBytes = m_api.PlayerGetTotalPos(m_playerHandle);
 
     UpdateProgressUI();
 
     // 自然播完: 之前还在播, 现在播放器自己停了(不是暂停)
-    if (!m_playPaused && !m_player.IsPlaying()){
+    if (!m_playPaused && !m_api.PlayerIsPlaying(m_playerHandle)){
         m_playPosBytes = m_playTotalBytes;
         UpdateProgressUI();
         AudioStartStopPlay();
@@ -535,4 +583,13 @@ void CMainWindows::DrawProgress(HDC hdc){
     }
 
     FrameRect(hdc, &rc, (HBRUSH)GetStockObject(GRAY_BRUSH));  // 边框
+}
+
+/**
+ * @brief 检查 dll 是否加载成功
+ * @return true 已加载
+ * @return false 未加载
+ */
+bool CMainWindows::SdkReady() const{
+    return m_api.hModule != nullptr;
 }

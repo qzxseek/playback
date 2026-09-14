@@ -6,7 +6,7 @@
 */
 #pragma once
 
-#include "audio_sdk/audio_types.h"   // AudioSdkState
+#include "audio_sdk/audio_types.h"
 #include "audio_sdk/audio_export.h"
 
 #include <cstdint>

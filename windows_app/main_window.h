@@ -15,6 +15,7 @@
 #include <commdlg.h>
 #include <string>
 
+// SDK 交付的唯一接口文件: 导出函数声明 + 显式加载器 AudioSdkApi 都在它里面
 #include "include/audio_sdk.h"
 
 // ---------------- 控件 / 消息 ID ----------------
@@ -49,6 +50,9 @@ private:
     void CreateControls(HWND hwnd);
     void OnCommand(int iId);
 
+    // dll 是否加载成功(失败时音频按钮会被禁掉, 这里再兜一道底, 免得调空函数指针)
+    bool SdkReady() const;
+
     // ---------- 录音 ----------
     void AudioStartStopRec();              // 开始 / 停止(按当前状态)
     void AudioPauseResumeRec();
@@ -74,8 +78,10 @@ private:
     bool m_playPaused  = false;
     bool m_dragging    = false;       // 用户是否正按住进度条拖动
 
-    CAudioRecorder m_recorder;        // 长命成员: 录音
-    CAudioPlayer   m_player;          // 长命成员: 播放
+    // 显式加载: 不用 C++ 类对象(GetProcAddress 取不到"类"), 改成"函数表 + 句柄"
+    AudioSdkApi m_api;                    // dll 里的全部函数指针(见 audio_c_api.h)
+    void* m_recorderHandle = nullptr;     // 录音器对象, 由 dll 的 RecorderCreate 创建
+    void* m_playerHandle   = nullptr;     // 播放器对象, 由 dll 的 PlayerCreate 创建
 
     std::wstring m_curFile;           // 当前打开的文件(播放用)
 

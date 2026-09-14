@@ -17,19 +17,16 @@ add_executable(audio_win_app
 
 set_target_properties(audio_win_app PROPERTIES WIN32_EXECUTABLE ON)
 
-# ① 头文件: 直接用 SDK 的头(sdk/include), 不再维护 UI 侧副本, 避免两份漂移
 target_include_directories(audio_win_app PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../sdk/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# ② 导入库 .lib: 链接期告诉链接器"这些符号在 audio_sdk.dll 里"
+# 显式加载不需要导入库(.lib): 运行期靠 LoadLibrary("audio_sdk.dll") + GetProcAddress 自己找符号。
 target_link_libraries(audio_win_app PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/resource/audio_sdk.lib
-    comdlg32
+    comdlg32                    
 )
 
-# ③ dll: exe 启动时按"exe 同目录 → 系统目录 → PATH"查找,
-#    这里构建后自动把 resource/audio_sdk.dll 拷到 exe 旁边, 保证独立运行
+# dll: 运行时 LoadLibrary 会先在 exe 所在目录找, 构建后自动拷到 exe 旁边, 保证双击就能跑
 add_custom_command(TARGET audio_win_app POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_CURRENT_SOURCE_DIR}/resource/audio_sdk.dll
