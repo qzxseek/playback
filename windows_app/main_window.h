@@ -79,7 +79,7 @@ private:
     bool m_dragging    = false;       // 用户是否正按住进度条拖动
 
     // 显式加载: 不用 C++ 类对象(GetProcAddress 取不到"类"), 改成"函数表 + 句柄"
-    AudioSdkApi m_api;                    // dll 里的全部函数指针(见 audio_c_api.h)
+    AudioSdkApi m_api;                    // 显式加载器, 里有全部函数指针(见 audio_sdk.h)
     void* m_recorderHandle = nullptr;     // 录音器对象, 由 dll 的 RecorderCreate 创建
     void* m_playerHandle   = nullptr;     // 播放器对象, 由 dll 的 PlayerCreate 创建
 

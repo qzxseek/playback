@@ -17,17 +17,6 @@ const uint8_t CEncryptedFormat::kKey[16] = {
 };
 
 /**
- * @brief 判断内存中的文件头是不是 .aenc 加密容器
- * @param data 文件内存缓冲
- * @param size 缓冲长度
- * @return 是 .aenc 返回 true
- */
-bool CEncryptedFormat::IsAencFile(const uint8_t* data, size_t size)
-{
-    return data && size >= 4 && std::memcmp(data, "AENC", 4) == 0;
-}
-
-/**
  * @brief XOR 对称加解密（自逆：加密和解密是同一个函数）
  * @param data 待处理数据（原地）
  * @param n 数据长度
@@ -36,6 +25,39 @@ void CEncryptedFormat::XorCrypt(uint8_t* data, size_t n)
 {
     for (size_t i = 0; i < n; i++)
         data[i] ^= kKey[i % 16];
+}
+
+/**
+ * @brief 判断一段内存的开头是不是 .aenc 魔数
+ * @param data 内存起始地址（通常是文件开头）
+ * @param size 数据长度
+ * @return 是 .aenc 返回 true（只比魔数, 不校验内部 WAV 头）
+ */
+bool CEncryptedFormat::IsAencData(const uint8_t* data, size_t size)
+{
+    return data && size >= kAencMagicSize &&
+           std::memcmp(data, kAencMagic, kAencMagicSize) == 0;
+}
+
+/**
+ * @brief 判断某个文件是不是 .aenc 加密容器（只读文件头 4 字节）
+ * @param utf8Path 文件路径（UTF-8）
+ * @return 是加密容器返回 true; 打不开或文件太短返回 false
+ */
+bool CEncryptedFormat::IsAencFile(const char* utf8Path)
+{
+    if (!utf8Path)
+        return false;
+
+    std::ifstream file(std::filesystem::u8path(utf8Path), std::ios::in | std::ios::binary);
+    if (!file.is_open())
+        return false;                                 // 打不开就当不是（调用方只用来提示）
+
+    uint8_t head[kAencMagicSize] = {};
+    if (!file.read(reinterpret_cast<char*>(head), sizeof(head)))
+        return false;                                 // 文件太短, 连魔数都放不下
+
+    return IsAencData(head, sizeof(head));
 }
 
 /**
@@ -62,7 +84,7 @@ AudioSdk::AudioSdkState CEncryptedFormat::SaveAencFile(const char* filePath,cons
         return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
 
     // 魔数 + 版本（文件级封装标记）
-    file.write("AENC", 4);
+    file.write(kAencMagic, kAencMagicSize);
     const uint16_t version = kAencVersion;
     file.write(reinterpret_cast<const char*>(&version), sizeof(version));
     if (!file.good())

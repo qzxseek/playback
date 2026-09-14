@@ -5,9 +5,10 @@
           本文件平台无关: 不含任何 winmm / AAudio 类型,
           Windows 与 Android 编的是同一份源码。
 */
-#include "audio_sdk/audio_export.h"     
-#include "audio_sdk/audio_player.h"     
-#include "audio_sdk/audio_recorder.h"   
+#include "audio_sdk/audio_export.h"
+#include "audio_sdk/audio_player.h"
+#include "audio_sdk/audio_recorder.h"
+#include "audio_sdk/encrypted_format.h" // CEncryptedFormat::IsAencFile
 
 #include <cstddef>      
 #include <cstdint>      
@@ -29,6 +30,10 @@ AUDIO_API void* AudioSdk_PlayerCreate(void) {
 // 销毁播放器对象(句柄可传 NULL, 安全)
 AUDIO_API void AudioSdk_PlayerDestroy(void* handle) {
     delete AsPlayer(handle);                      // handle 为 nullptr 也安全
+}
+
+AUDIO_API int AudioSdk_IsAencFile(const char* utf8Path) {
+    return CEncryptedFormat::IsAencFile(utf8Path) ? 1 : 0;
 }
 
 // 打开并播放 .wav/.aenc(UTF-8 路径); 返回 AudioSdkState 的序号

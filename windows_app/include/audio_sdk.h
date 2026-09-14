@@ -106,8 +106,10 @@ int AudioSdk_RecorderGetAencEncrypt(void* handle);       // 1=加密保存
 int AudioSdk_RecorderGetIsPaused(void* handle);          // 1=已暂停
 size_t AudioSdk_RecorderGetRecordedBytes(void* handle);  // 已录字节
 
+int AudioSdk_IsAencFile(const char* utf8Path);
+
 #ifdef __cplusplus
-}   
+}
 #endif
 
 
@@ -115,7 +117,7 @@ size_t AudioSdk_RecorderGetRecordedBytes(void* handle);  // 已录字节
 #if defined(_WIN32) && defined(__cplusplus)
 
 #include <windows.h>
-#include <cstdio>       // std::snprintf(填加载失败原因)
+#include <cstdio>       
 
 /**
  * @brief 从 audio_sdk.dll 里取一个函数指针
@@ -157,6 +159,7 @@ struct AudioSdkApi{
     decltype(&::AudioSdk_RecorderGetAencEncrypt)       RecorderGetAencEncrypt    = nullptr;
     decltype(&::AudioSdk_RecorderGetIsPaused)          RecorderGetIsPaused       = nullptr;
     decltype(&::AudioSdk_RecorderGetRecordedBytes)  RecorderGetRecordedBytes  = nullptr;
+    decltype(&::AudioSdk_IsAencFile)             IsAencFile = nullptr;
 
     /**
      * @brief 显式加载: LoadLibrary 打开 dll, GetProcAddress 逐个取函数地址。
@@ -198,6 +201,7 @@ struct AudioSdkApi{
         AUDIO_SDK_LOAD(RecorderGetAencEncrypt,    "AudioSdk_RecorderGetAencEncrypt");
         AUDIO_SDK_LOAD(RecorderGetIsPaused,       "AudioSdk_RecorderGetIsPaused");
         AUDIO_SDK_LOAD(RecorderGetRecordedBytes,  "AudioSdk_RecorderGetRecordedBytes");
+        AUDIO_SDK_LOAD(IsAencFile,                "AudioSdk_IsAencFile");
 
         if (!bOk) { Unload(); return false; }          // 缺符号就整体回滚, 别留半套指针
         return true;

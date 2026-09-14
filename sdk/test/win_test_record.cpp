@@ -17,7 +17,7 @@
 
 #include "audio_sdk/audio_types.h"     // SAMPLE_RATE 等宏 + AudioSdkState
 #include "audio_sdk/audio_recorder.h"  // CAudioRecorder
-#include "audio_sdk/encrypted_format.h" // IsAencFile / kAencPrefixSize（录音落盘为 .aenc）
+#include "audio_sdk/encrypted_format.h" // IsAencData / kAencPrefixSize（录音落盘为 .aenc）
 #include "audio_sdk/wav_format.h"      // WavHeader（校验落盘文件）
 
 // 读文件大小；不存在返回 0
@@ -92,7 +92,7 @@ int main(int argc, char* argv[])
     file.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(size));
     file.close();
 
-    if (!CEncryptedFormat::IsAencFile(buf.data(), buf.size()))
+    if (!CEncryptedFormat::IsAencData(buf.data(), buf.size()))
     {
         std::printf("[error] %ls is not an .aenc container (magic missing)\n", outFile);
         return 1;

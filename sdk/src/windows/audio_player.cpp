@@ -132,7 +132,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    bool bEncrypted  = false;
    size_t payloadOffset = 0;
 
-   if (CEncryptedFormat::IsAencFile(vecBuf.data(), vecBuf.size())){
+   if (CEncryptedFormat::IsAencData(vecBuf.data(), vecBuf.size())){
       if (vecBuf.size() < CEncryptedFormat::kAencPrefixSize + sizeof(WavHeader))
          return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;   // 头都不完整
       // 剥掉 6 字节前缀后校验；内部 WAV 头自洽（riffSize 等按 44 头算）
@@ -401,3 +401,4 @@ bool CAudioPlayer::IsPaused() const{
 bool CAudioPlayer::GetIsPaused() const{
    return m_impl->m_isPaused;
 }
+

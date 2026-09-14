@@ -72,18 +72,6 @@ CMainWindows::~CMainWindows(){
 }
 
 /**
- * @brief 判断某文件前 4 字节是否 "AENC"(加密容器), 用于提示
- * @param path 文件路径
- * @return true 是加密文件, false 否是
- */
-static bool IsAencFileByPath(const wchar_t* path){
-    std::ifstream f(path, std::ios::binary);
-    char head[4] = {};
-    f.read(head, 4);
-    return f.gcount() == 4 && std::memcmp(head, "AENC", 4) == 0;
-}
-
-/**
  * @brief 读取音频文件的"每秒字节数"(byteRate), 用于把 字节→时间 换算。
  * @param path 文件路径
  * @return 每秒字节数
@@ -371,11 +359,11 @@ bool CMainWindows::OpenFileDialog(HWND hwndOwner){
 
     m_curFile = file;                                     // 记住完整路径
 
-    // 可选: 在窗口标题上显示当前文件, 直观反馈选到了什么
+    // 可选: 在窗口标题上显示当前文件, 直观反馈选到了什么。
     std::wstring title = L"Win32 音频播放器 - ";
     title += file;
-    if (IsAencFileByPath(file)) title += L"  (加密 .aenc)";
-    else title += L"  (明文)";
+    title += m_api.IsAencFile(WideToUtf8(file).c_str())
+                 ? L"  (加密 .aenc)" : L"  (明文)";
     SetWindowTextW(m_hwnd, title.c_str());
 
     if (!m_isRecording && !m_isPlaying)
