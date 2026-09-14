@@ -13,6 +13,7 @@ CompileFlags:
     - -D_UNICODE
     - -DWIN32
     - -D_WINDOWS
+    - -DAUDIO_SDK_BUILD
     - -IC:/Users/admin/Desktop/exam_sdk/sdk/include
     - -isystem
     - C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/VC/Tools/MSVC/14.29.30133/include

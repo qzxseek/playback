@@ -162,7 +162,11 @@ void CMainWindows::CreateControls(HWND hwnd){
     if (!SdkReady()){
         EnableWindow(m_hBtnRec_Start_Stop, FALSE);
         EnableWindow(m_hChkEnc, FALSE);
+        return;
     }
+    // 勾选框初始状态 = 录音器真实的加密开关(默认开)。
+    SendMessageW(m_hChkEnc, BM_SETCHECK,
+                 m_api.RecorderGetAencEncrypt(m_recorderHandle) ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 /**
