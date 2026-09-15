@@ -5,10 +5,11 @@
           本文件平台无关: 不含任何 winmm / AAudio 类型,
           Windows 与 Android 编的是同一份源码。
 */
+#include "audio_sdk/audio_c_api.h"
 #include "audio_sdk/audio_export.h"
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/audio_recorder.h"
-#include "audio_sdk/encrypted_format.h" // CEncryptedFormat::IsAencFile
+#include "audio_sdk/encrypted_format.h" 
 
 #include <cstddef>      
 #include <cstdint>      

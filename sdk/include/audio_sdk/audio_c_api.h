@@ -31,32 +31,6 @@
 extern "C" {
 #endif
 
-// ----------- 音频参数 -----------
-#define SAMPLE_RATE     44100
-#define BITS_PER_SAMPLE 16
-#define CHANNELS        1
-
-// ----------- 状态码 -----------
-#ifdef __cplusplus
-namespace AudioSdk {
-enum class AudioSdkState
-{
-    NONE,                  // 无错误
-    DEVICE_NOT_FOUND,      // 设备无法打开
-    DEVICE_BUSY,           // 设备已被占用
-    FORMAT_NOT_SUPPORTED,  // 格式不支持
-    FILE_OPEN_FAILED,      // 文件打开失败
-    FILE_WRITE_FAILED,     // 文件写入失败
-    FILE_READ_FAILED,      // 文件读取失败
-    INVALID_PARAMETER,     // 无效参数
-    OUT_OF_MEMORY,         // 内存不足
-    PLATFORM_ERROR,        // 平台错误
-    UNKNOWN_ERROR,         // 未知错误
-};
-}
-#endif
-
-
 // ==================== 导出函数声明 ====================
 
 // ==================== 播放器 ====================

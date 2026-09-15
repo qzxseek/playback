@@ -16,7 +16,7 @@
 #include <string>
 
 // SDK 交付的唯一接口文件: 导出函数声明 + 显式加载器 AudioSdkApi 都在它里面
-#include "include/audio_sdk.h"
+#include "../sdk/include/audio_sdk/audio_c_api.h"
 
 // ---------------- 控件 / 消息 ID ----------------
 #define BTN_RECORD_START_STOP          1001   // 开始录音 / 停止录音(同一个按钮切换文字)

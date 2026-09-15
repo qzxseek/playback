@@ -18,7 +18,7 @@ add_executable(audio_win_app
 set_target_properties(audio_win_app PROPERTIES WIN32_EXECUTABLE ON)
 
 target_include_directories(audio_win_app PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../sdk/include
 )
 
 # 显式加载不需要导入库(.lib): 运行期靠 LoadLibrary("audio_sdk.dll") + GetProcAddress 自己找符号。
