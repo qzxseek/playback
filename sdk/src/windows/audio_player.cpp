@@ -340,6 +340,7 @@ AudioSdk::AudioSdkState CAudioPlayer::Seek(uint32_t posBytes){
 
    SetEvent(p->m_hWakeEvent);                            // 唤醒播放线程, 从新位置补块
    if (p->m_isPaused) waveOutPause(p->m_hWaveOut);       // 若原先暂停，继续暂停
+   else waveOutRestart(p->m_hWaveOut);                  // 若原先在播放，继续播放
    return AudioSdk::AudioSdkState::NONE;
 }
 
@@ -368,7 +369,7 @@ void CAudioPlayer::ResumePlay(){             // 继续播放
 */
 void CAudioPlayer::StopPlay(){             // 停止播放
    Impl* p = m_impl;
-   if (!p->m_isPlaying) { p->CleanUpDevice(); return; }
+   if (!p->m_isPlaying) { p->CleanUpDevice();p->m_hThread = NULL; return; }
    SetEvent(p->m_hStopEvent);
    if (p->m_hThread){                     // 等待线程结束
       WaitForSingleObject(p->m_hThread, INFINITE);

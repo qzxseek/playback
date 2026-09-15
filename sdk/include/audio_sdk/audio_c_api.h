@@ -1,14 +1,24 @@
 /* @Created On : 2026/9/12
    @Author : 孟源
-   @note : audio_sdk 的统一接口文件 —— 所有平台共用这一份。
+   @note : audio_sdk 的统一接口文件 —— 所有平台共用这一份, 由 SDK 提供。
           Windows UI 用它, 后续 Android(以及其他平台)也走它。
 
-          自包含 —— 不 include SDK 目录里的任何头, 拿到它 + audio_sdk.dll 两个文件就能用。
-          里面四块:
-            1) 音频参数(录音时长换算用)
-            2) 状态码(把接口返回的 int 翻译成提示文字)
-            3) 导出函数声明(extern "C", 名字不做 C++ 修饰)
-            4) 显式加载器 AudioSdkApi(仅 Windows 编译; 其他平台直接用上面第 3 块)
+          里面三块:
+            1) 导出函数声明(extern "C" 名字不修饰 + AUDIO_API 导出标记)
+            2) 音频参数与状态码 —— 直接用 SDK 的 audio_types.h, 不抄第二份
+            3) 显式加载器 AudioSdkApi(仅 Windows 编译; 其他平台用上面第 1 块)
+
+          为什么声明必须带 AUDIO_API:
+            本头被两边同时使用 —— SDK 自己的 src/common/audio_c_api.cpp 也 include 它,
+            那边用 AUDIO_API 做函数定义。声明与定义的导出标记必须一致,
+            否则 MSVC 报 C2375("重定义; 不同的链接")。
+            AUDIO_API 的展开见 audio_export.h:
+              AUDIO_SDK_BUILD 已定义(编 SDK 本体) → dllexport
+              未定义(UI 等调用方)              → dllimport
+
+          UI 侧看到的是 dllimport 也不要紧: UI 全程只用 GetProcAddress 取地址
+          (decltype 是不求值上下文), 不按名字直接调用, 所以不会生成 __imp_ 引用,
+          也就不需要链导入库(.lib)。
 
           各平台怎么用:
             Windows → 显式加载, 全程不链 .lib:
@@ -19,11 +29,11 @@
                         api.PlayerDestroy(player);
                         api.Unload();
             Android → 函数直接编进 .so, JNI 里按 C 名直接调, 不需要加载器
-
-          第 1、2 块与 SDK 内部的 audio_sdk/audio_types.h 是同一套值 ——
-          那边是唯一真源, 改了要同步这里(否则时长换算和错误提示会错位)。
 */
 #pragma once
+
+#include "audio_sdk/audio_export.h"   
+#include "audio_sdk/audio_types.h"    
 
 #include <stdint.h>
 
@@ -36,52 +46,52 @@ extern "C" {
 // ==================== 播放器 ====================
 
 // 创建播放器对象; 成功返回句柄(非空), 失败返回 NULL
-void* AudioSdk_PlayerCreate(void);
+AUDIO_API void* AudioSdk_PlayerCreate(void);
 
 // 销毁播放器对象(句柄可传 NULL, 安全)
-void AudioSdk_PlayerDestroy(void* handle);
+AUDIO_API void AudioSdk_PlayerDestroy(void* handle);
 
 // 打开并播放 .wav/.aenc(UTF-8 路径); 返回 AudioSdkState 的序号
-int AudioSdk_PlayerPlayFile(void* handle, const char* utf8Path);
+AUDIO_API int AudioSdk_PlayerPlayFile(void* handle, const char* utf8Path);
 
-void AudioSdk_PlayerPausePlay(void* handle);
-void AudioSdk_PlayerResumePlay(void* handle);
-void AudioSdk_PlayerStopPlay(void* handle);
+AUDIO_API void AudioSdk_PlayerPausePlay(void* handle);
+AUDIO_API void AudioSdk_PlayerResumePlay(void* handle);
+AUDIO_API void AudioSdk_PlayerStopPlay(void* handle);
 
 // 跳转播放位置(字节); 返回 AudioSdkState 的序号
-int AudioSdk_PlayerSeek(void* handle, uint32_t posBytes);
+AUDIO_API int AudioSdk_PlayerSeek(void* handle, uint32_t posBytes);
 
-uint32_t AudioSdk_PlayerGetPlayPos(void* handle);    // 已播字节
-uint32_t AudioSdk_PlayerGetTotalPos(void* handle);   // 总字节
-int      AudioSdk_PlayerIsPlaying(void* handle);     // 1=在播, 0=否
-uint32_t AudioSdk_PlayerGetPlayPosMs(void* handle);   // 当前播放位置(毫秒)
-uint32_t AudioSdk_PlayerGetTotalPosMs(void* handle);  // 总时长(毫秒); 未加载文件为 0
+AUDIO_API uint32_t AudioSdk_PlayerGetPlayPos(void* handle);    // 已播字节
+AUDIO_API uint32_t AudioSdk_PlayerGetTotalPos(void* handle);   // 总字节
+AUDIO_API int      AudioSdk_PlayerIsPlaying(void* handle);     // 1=在播, 0=否
+AUDIO_API uint32_t AudioSdk_PlayerGetPlayPosMs(void* handle);   // 当前播放位置(毫秒)
+AUDIO_API uint32_t AudioSdk_PlayerGetTotalPosMs(void* handle);  // 总时长(毫秒); 未加载文件为 0
 
 // ==================== 录音器 ====================
 
 // 创建录音器对象; 成功返回句柄(非空), 失败返回 NULL
-void* AudioSdk_RecorderCreate(void);
+AUDIO_API void* AudioSdk_RecorderCreate(void);
 
 // 销毁录音器对象(句柄可传 NULL, 安全)
-void AudioSdk_RecorderDestroy(void* handle);
+AUDIO_API void AudioSdk_RecorderDestroy(void* handle);
 
 // 开始录音; 返回 AudioSdkState 的序号
-int AudioSdk_RecorderStart(void* handle);
+AUDIO_API int AudioSdk_RecorderStart(void* handle);
 
 // 暂停/继续录音
-void AudioSdk_RecorderPauseResume(void* handle);
+AUDIO_API void AudioSdk_RecorderPauseResume(void* handle);
 
 // 停止录音并落盘; 返回 AudioSdkState 的序号
-int AudioSdk_RecorderStop(void* handle);
+AUDIO_API int AudioSdk_RecorderStop(void* handle);
 
 // 切换加密开关(录制中不生效)
-void AudioSdk_RecorderSetAencEncrypt(void* handle);
+AUDIO_API void AudioSdk_RecorderSetAencEncrypt(void* handle);
 
-int AudioSdk_RecorderGetAencEncrypt(void* handle);       // 1=加密保存
-int AudioSdk_RecorderGetIsPaused(void* handle);          // 1=已暂停
-uint32_t AudioSdk_RecorderGetRecordedMs(void* handle);   // 已录时长(毫秒)
+AUDIO_API int      AudioSdk_RecorderGetAencEncrypt(void* handle);    // 1=加密保存
+AUDIO_API int      AudioSdk_RecorderGetIsPaused(void* handle);       // 1=已暂停
+AUDIO_API uint32_t AudioSdk_RecorderGetRecordedMs(void* handle);     // 已录时长(毫秒)
 
-int AudioSdk_IsAencFile(const char* utf8Path);
+AUDIO_API int AudioSdk_IsAencFile(const char* utf8Path);   // 1=加密, 0=否
 
 #ifdef __cplusplus
 }

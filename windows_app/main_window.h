@@ -16,18 +16,17 @@
 #include <string>
 
 // SDK 交付的唯一接口文件: 导出函数声明 + 显式加载器 AudioSdkApi 都在它里面
-#include "../sdk/include/audio_sdk/audio_c_api.h"
+#include "audio_sdk/audio_c_api.h"
 
 // ---------------- 控件 / 消息 ID ----------------
 #define BTN_RECORD_START_STOP          1001   // 开始录音 / 停止录音(同一个按钮切换文字)
 #define BTN_RECORD_PAUSE    1002   // 暂停/继续录音
-#define BTN_STOP            1003   // (保留) 停止录音
-#define BTN_START_STOP_PLAY 1004   // 开始播放 / 停止播放(按当前状态)
-#define BTN_PLAY_PAUSE      1005   // 暂停/继续播放
-#define BTN_ENCRYPT         1006   // 加密复选框
-#define BTN_OPEN_FILE       1007   // 打开文件按钮
-#define IDC_LBL_TIME        1008   // 时间/状态文字
-#define IDC_LBL_REC_TIME    1009   // 录音时间文字  
+#define BTN_START_STOP_PLAY 1003   // 开始播放 / 停止播放(按当前状态)
+#define BTN_PLAY_PAUSE      1004   // 暂停/继续播放
+#define BTN_ENCRYPT         1005   // 加密复选框
+#define BTN_OPEN_FILE       1006   // 打开文件按钮
+#define IDC_LBL_TIME        1007   // 时间/状态文字
+#define IDC_LBL_REC_TIME    1008   // 录音时间文字  
 
 #define WM_WAVEIN_DONE (WM_USER + 1)
 
@@ -95,7 +94,6 @@ private:
     HWND m_hBtnOpen            = NULL;   // 打开文件
     HWND m_hBtnPlay_Start_Stop = NULL;   // 播放/停止播放按当前状态
     HWND m_hBtnPlayPause       = NULL;   // 暂停/继续播放
-    HWND m_hBtnPlayStop        = NULL;   // 停止播放
     HWND m_hLblRecTime         = NULL;   // 录音时间文字
     HWND m_hLblTime            = NULL;   // 时间/状态文字
 };

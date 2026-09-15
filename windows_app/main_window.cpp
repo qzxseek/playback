@@ -4,6 +4,8 @@
 */
 #include "main_window.h"
 
+#include <iterator>     // std::size(取数组元素个数, 传给 swprintf_s 做容量)
+
 
 // g_pMain 声明在 main.cpp(WinMain 里 new 出来并赋值)
 // 静态 WndProc 需要它把消息转发回实例
@@ -71,14 +73,15 @@ CMainWindows::~CMainWindows(){
 
 /**
  * @brief 毫秒 → "MM:SS.d" 文本(如 65000ms → 01:05.0)
- * @param out 输出缓冲(至少 16 字符)
+ * @param out 输出缓冲(建议至少 16 字符: DWORD 拉满时 "71582:47.2" + 结尾 NUL)
+ * @param cch out 的容量(字符数, 含结尾 NUL) —— 用 std::size(out) 传
  * @param ms 毫秒
  */
-static void FormatMs(wchar_t* out, DWORD ms){
-    wsprintfW(out, L"%02u:%02u.%u",
-              (UINT)(ms / 60000),            // 分
-              (UINT)((ms / 1000) % 60),      // 秒
-              (UINT)((ms / 100) % 10));      // 十分之一秒
+static void FormatMs(wchar_t* out, size_t cch, DWORD ms){
+    swprintf_s(out, cch, L"%02u:%02u.%u",
+               (UINT)(ms / 60000),            // 分
+               (UINT)((ms / 1000) % 60),      // 秒
+               (UINT)((ms / 100) % 10));      // 十分之一秒
 }
 
 /**
@@ -364,8 +367,8 @@ bool CMainWindows::OpenFileDialog(HWND hwndOwner){
  */
 void CMainWindows::UpdateRecTimeUI(DWORD ms){
     wchar_t buf[16], text[40];
-    FormatMs(buf, ms);                       // mm:ss.d
-    wsprintfW(text, L"录音时长: %s", buf);
+    FormatMs(buf, std::size(buf), ms);                       // mm:ss.d
+    swprintf_s(text, std::size(text), L"录音时长: %s", buf);
     SetWindowTextW(m_hLblRecTime, text);
 }
 
@@ -521,9 +524,9 @@ void CMainWindows::UpdateProgressUI(){
     const DWORD totMs = m_api.PlayerGetTotalPosMs(m_playerHandle);
 
     wchar_t now[16], tot[16], text[48];
-    FormatMs(now, posMs);
-    FormatMs(tot, totMs);
-    wsprintfW(text, L"%s / %s", now, tot);
+    FormatMs(now, std::size(now), posMs);
+    FormatMs(tot, std::size(tot), totMs);
+    swprintf_s(text, std::size(text), L"%s / %s", now, tot);
     SetWindowTextW(m_hLblTime, text);
 
     InvalidateProgress();
