@@ -198,6 +198,11 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    p->m_csInit = true;
    p->m_hWakeEvent = CreateEvent(NULL, FALSE, FALSE,NULL);
    p->m_hStopEvent = CreateEvent(NULL, TRUE, FALSE,NULL);
+   // 事件建失败(极少, 一般是句柄耗尽)就整体回滚, 不能带着空句柄往下走:
+   if (p->m_hWakeEvent == NULL || p->m_hStopEvent == NULL) {
+      p->CleanUpDevice();
+      return AudioSdk::AudioSdkState::UNKNOWN_ERROR;
+   }
 
    p->m_isPlaying = true;
    p->m_isPaused = false;
@@ -206,6 +211,11 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
       static_cast<Impl*>(arg)->FeedLoop();
       return 0;
    },p,0,NULL);
+   if (p->m_hThread == NULL) {                // 线程没起来, 状态和设备都回滚
+      p->m_isPlaying = false;
+      p->CleanUpDevice();
+      return AudioSdk::AudioSdkState::UNKNOWN_ERROR;
+   }
    return AudioSdk::AudioSdkState::NONE;
 }
 
@@ -370,8 +380,20 @@ void CAudioPlayer::ResumePlay(){             // 继续播放
 */
 void CAudioPlayer::StopPlay(){             // 停止播放
    Impl* p = m_impl;
-   if (!p->m_isPlaying) { p->CleanUpDevice();p->m_hThread = NULL; return; }
-   SetEvent(p->m_hStopEvent);
+   if (!p->m_isPlaying) {
+      // 句柄存在, 等待线程退出后置空
+      if (p->m_hThread) {
+         WaitForSingleObject(p->m_hThread, INFINITE);   // 等它彻底退出再关
+         CloseHandle(p->m_hThread);
+         p->m_hThread = NULL;
+      }
+      p->CleanUpDevice();
+      return;
+   }
+   
+   if (p->m_hStopEvent)
+      SetEvent(p->m_hStopEvent);
+
    if (p->m_hThread){                     // 等待线程结束
       WaitForSingleObject(p->m_hThread, INFINITE);
       CloseHandle(p->m_hThread);
