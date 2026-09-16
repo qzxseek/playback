@@ -4,9 +4,11 @@
 */
 #include "audio_sdk/audio_recorder.h"
 #include "audio_sdk/wav_format.h"   // SaveWavFile：录音落盘统一走它(bEncrypt=true 存加密)
+#include "audio_sdk/waveform.h"     // CWaveform::ComputePeaks(波形降采样)
 
 #include <mmeapi.h>
 #include <winuser.h>
+#include <atomic>
 #include <string>
 
 /**
@@ -39,10 +41,18 @@ struct CAudioRecorder::Impl{
    HWAVEIN   m_hWaveIn   = NULL;         // 句柄
    WAVEHDR   m_waveHdrIn[BUFFER_COUNT];  // 音频缓冲区
    std::vector<BYTE> m_recordedData;     // 录制数据
-   bool      m_isRecording = false;      // 是否正在录制
+   // 跨线程读写: UI 线程置位, 音频线程在 OnBufferDone 里读 → 必须原子
+   std::atomic<bool> m_isRecording{false};  // 是否正在录制
    bool      m_isPaused    = false;      // 是否正在暂停录制
    bool      m_isAencEncrypt = true;     // 是否加密保存(默认加密)
    std::wstring m_outputName = L"output"; // 输出文件名(不含扩展名, 默认 output)
+
+   // ---- 波形 ----
+   // 回调指针也用原子: UI 线程注册/注销, 音频线程取快照(音频线程不能加锁)
+   std::atomic<AudioSdkWaveCallback> m_waveCb{nullptr};
+   std::atomic<void*>                m_waveUser{nullptr};
+   // 峰值暂存区: 预先分配好 —— 音频线程里只算不分配(分配会导致爆音)
+   float m_waveBuf[CWaveform::kPointsPerBlock * 2] = {};
 };
 
 /** 
@@ -138,6 +148,10 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
    waveInClose(p->m_hWaveIn);
    p->m_hWaveIn = NULL;
 
+   // 设备已彻底静默(不会再有在途回调), 此时注销波形回调是安全的
+   p->m_waveCb.store(nullptr, std::memory_order_release);
+   p->m_waveUser.store(nullptr, std::memory_order_relaxed);
+
    std::wstring outFile = p->m_outputName;
    outFile += p->m_isAencEncrypt ? L".aenc" : L".wav";
    const std::string utf8Path = WideToUtf8(outFile);   // 宽路径 → UTF-8 再交给格式层
@@ -161,6 +175,20 @@ void CALLBACK CAudioRecorder::Impl::WaveInProc(HWAVEIN hWaveIn, UINT uMsg, DWORD
  * @param hdr 指向 WAVEHDR 结构体的指针
  */
 void CAudioRecorder::Impl::OnBufferDone(WAVEHDR* hdr) {
+
+   // ---- 波形: 算好这一块的峰值推给调用方 ----
+   // 只在"确实还在录"时推: StopRecording 会先把 m_isRecording 置 false,
+   // 于是 waveInReset 触发的收尾回调不会再往 UI 推数据(那时 UI 可能正在收尾)。
+   const AudioSdkWaveCallback cb = m_waveCb.load(std::memory_order_acquire);
+   if (cb && m_isRecording.load(std::memory_order_acquire) &&
+       hdr->dwBytesRecorded >= sizeof(int16_t)) {
+      // 传字节指针即可, ComputePeaks 内部按字节读(不依赖缓冲的 2 字节对齐)
+      CWaveform::ComputePeaks(hdr->lpData, hdr->dwBytesRecorded,
+                              m_waveBuf, CWaveform::kPointsPerBlock);
+      // 缓冲是 Impl 的成员, 调用方必须在回调返回前拷走(不要保存这个指针)
+      cb(m_waveBuf, CWaveform::kPointsPerBlock,
+         m_waveUser.load(std::memory_order_relaxed));
+   }
 
    // 复制数据到录制数据向量
    m_recordedData.insert(m_recordedData.end(), reinterpret_cast<BYTE*>(hdr->lpData),
@@ -196,4 +224,18 @@ uint32_t CAudioRecorder::GetRecordedMs() const{
    if (byteRate == 0) return 0;
    // 先乘后除(乘 1000ULL 避免 32 位溢出), 拿到的才是毫秒
    return static_cast<uint32_t>(m_impl->m_recordedData.size() * 1000ULL / byteRate);
+}
+
+/**
+ * @brief 注册/取消录音波形回调(录制中每块回调一次)
+ * @param cb 回调(传 NULL 取消)
+ * @param userData 透传给回调的指针
+ * @note 只改两个原子指针不加锁 —— 音频线程用"取快照"的方式读。
+ *       先写 userData 再发布 cb(release/acquire 配对), 保证音频线程
+ *       看到新回调时一定也能看到配套的 userData。
+ */
+void CAudioRecorder::SetWaveCallback(AudioSdkWaveCallback cb, void* userData) {
+   Impl* p = m_impl;
+   p->m_waveUser.store(userData, std::memory_order_relaxed);   // 先给 userData
+   p->m_waveCb.store(cb, std::memory_order_release);           // 再发布回调
 }

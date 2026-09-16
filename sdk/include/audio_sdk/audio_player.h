@@ -32,6 +32,11 @@ public:
     uint32_t GetTotalPos() const;       // 获取总播放长度(字节)
     uint32_t GetPlayPosMs() const;      // 当前播放位置(毫秒)
     uint32_t GetTotalPosMs() const;     // 总时长(毫秒); 未加载文件返回 0
+
+    // 取整个文件的波形(降采样成 CWaveform::kFilePoints 个峰值点)。
+    // 在【调用线程】同步回调一次(通常是 UI 线程), 没有并发问题。
+    // 未加载文件 / 传 NULL 时不会调用。回调返回后 minmax 缓冲即失效, 需要就自己拷走。
+    void BuildWaveform(AudioSdkWaveCallback cb, void* userData);
     bool GetIsPaused() const;           // 获取是否暂停播放
     bool IsPlaying() const;             // 是否正在播放
     bool IsPaused() const;              // 是否暂停

@@ -81,6 +81,13 @@ AUDIO_API uint32_t AudioSdk_PlayerGetTotalPosMs(void* handle) {
     return handle ? AsPlayer(handle)->GetTotalPosMs() : 0;
 }
 
+// 取整个文件的波形(降采样)。在调用线程同步回调一次, 无并发。
+AUDIO_API void AudioSdk_PlayerBuildWaveform(void* handle,
+                                            AudioSdkWaveCallback cb,
+                                            void* userData) {
+    if (handle) AsPlayer(handle)->BuildWaveform(cb, userData);
+}
+
 // 1=在播, 0=否
 AUDIO_API int AudioSdk_PlayerIsPlaying(void* handle) {
     return (handle && AsPlayer(handle)->IsPlaying()) ? 1 : 0;
@@ -133,6 +140,14 @@ AUDIO_API int AudioSdk_RecorderGetIsPaused(void* handle) {      // 1=已暂停
 // 已录时长(毫秒) —— UI 显示录音时长直接用
 AUDIO_API uint32_t AudioSdk_RecorderGetRecordedMs(void* handle) {
     return handle ? AsRecorder(handle)->GetRecordedMs() : 0;
+}
+
+// 注册/取消录音波形回调(cb 传 NULL 取消)。
+// 回调跑在音频线程, 只许做"拷贝 + PostMessage", 详见 audio_types.h 的说明。
+AUDIO_API void AudioSdk_RecorderSetWaveCallback(void* handle,
+                                                AudioSdkWaveCallback cb,
+                                                void* userData) {
+    if (handle) AsRecorder(handle)->SetWaveCallback(cb, userData);
 }
 
 }

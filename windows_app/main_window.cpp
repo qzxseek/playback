@@ -4,6 +4,7 @@
 */
 #include "main_window.h"
 
+#include <cstring>      // std::memmove(滚动窗口批量左移)
 #include <iterator>     // std::size(取数组元素个数, 传给 swprintf_s 做容量)
 
 
@@ -63,6 +64,7 @@ CMainWindows::~CMainWindows(){
     }
     // 先销毁 dll 里的对象, 再卸 dll —— 顺序反了就是往已卸载的代码里跳
     if (m_api.hModule){
+        m_api.RecorderSetWaveCallback(m_recorderHandle, nullptr, nullptr);
         m_api.RecorderDestroy(m_recorderHandle);
         m_api.PlayerDestroy(m_playerHandle);
         m_recorderHandle = nullptr;
@@ -82,6 +84,100 @@ static void FormatMs(wchar_t* out, size_t cch, DWORD ms){
                (UINT)(ms / 60000),            // 分
                (UINT)((ms / 1000) % 60),      // 秒
                (UINT)((ms / 100) % 10));      // 十分之一秒
+}
+
+/**
+ * @brief 录音波形回调 —— 跑在【音频线程】!
+ * @param minmax 峰值对 [min0,max0,min1,max1,...], 已归一化到 [-1,1]
+ * @param points 点数
+ * @param userData 注册时传进来的 this
+ */
+void CMainWindows::OnWaveFromAudio(const float* minmax, int points, void* userData){
+    if (!minmax || points <= 0) return;
+    auto* self = static_cast<CMainWindows*>(userData);
+    if (!self) return;
+
+    // 防御: 环形缓冲只有 WAVE_RING_POINTS 格, 一次推来的点数不能超过它,
+    // 否则后面的点会绕回去盖掉前面的(下标被取模保护, 不会越界, 但数据是乱的)。
+    // 当前契约是每块 256 点、环形 4096 格, 所以正常永远走不到这个分支;
+    // 这里是把不变量写出来 —— 万一有人改了 AUDIO_SDK_WAVE_BLOCK_POINTS 也不出事。
+    if (points > WAVE_RING_POINTS) points = WAVE_RING_POINTS;
+
+    // 写环形缓冲: 生产者只动 m_waveWritePos, 消费者只动 m_waveReadPos
+    int iWrite = self->m_waveWritePos.load(std::memory_order_relaxed);
+    for (int i = 0; i < points; ++i){
+        self->m_waveRing[iWrite][0] = minmax[i * 2];        // min
+        self->m_waveRing[iWrite][1] = minmax[i * 2 + 1];    // max
+        iWrite = (iWrite + 1) % WAVE_RING_POINTS;                // 满了就绕回, 覆盖最老的
+    }
+    // release: 保证上面的写入对取到该值的消费者可见
+    self->m_waveWritePos.store(iWrite, std::memory_order_release);
+
+    // 通知 UI 线程来取。用 Post(异步)不用 Send —— Send 会阻塞音频线程等 UI 处理完
+    ::PostMessageW(self->m_hwnd, WM_WAVE_DATA, 0, 0);
+}
+
+/**
+ * @brief 文件波形回调 —— 在【调用线程】(这里是 UI 线程)同步执行, 无并发
+ * @param minmax 峰值对
+ * @param points 点数
+ * @param userData 注册时传进来的 this
+ */
+void CMainWindows::OnWaveFromFile(const float* minmax, int points, void* userData){
+    if (!minmax || points <= 0) return;
+    auto* self = static_cast<CMainWindows*>(userData);
+    if (!self) return;
+
+    const int n = points < AUDIO_SDK_WAVE_FILE_POINTS ? points : AUDIO_SDK_WAVE_FILE_POINTS;
+    for (int i = 0; i < n; ++i){
+        self->m_fileWave[i][0] = minmax[i * 2];
+        self->m_fileWave[i][1] = minmax[i * 2 + 1];
+    }
+    self->m_fileWaveCount = n;
+}
+
+/**
+ * @brief UI 线程: 把环形缓冲里尚未消费的点并进录音滚动窗口
+ * @note 只有 UI 线程调用, 所以 m_waveReadPos / m_recWave 不需要同步
+ */
+void CMainWindows::ConsumeWaveRing(){
+    const int iWrite = m_waveWritePos.load(std::memory_order_acquire);
+
+    // 本次能取到多少个点(环形, 可能绕了一圈)
+    int avail = iWrite - m_waveReadPos;
+    if (avail < 0) avail += WAVE_RING_POINTS;
+    if (avail == 0) return;
+
+    // 生产得太快、把环形挤满时, 只取最新的 REC_WAVE_POINTS 个(丢掉更老的)
+    if (avail > REC_WAVE_POINTS){
+        m_waveReadPos = (iWrite - REC_WAVE_POINTS + WAVE_RING_POINTS) % WAVE_RING_POINTS;
+        avail = REC_WAVE_POINTS;
+    }
+
+    // 窗口放不下的老点先丢掉: 一次 memmove 把保留的部分挪到开头。
+    // 这样比"每来一个点就挪一格"省掉大量重复拷贝。
+    const int iTotal = m_recWaveCount + avail;
+    if (iTotal > REC_WAVE_POINTS){
+        int drop = iTotal - REC_WAVE_POINTS;
+        // 保证 drop 不超出已有数据, 下面 keep 才是非负的。
+        // (由上面 avail <= REC_WAVE_POINTS 和 m_recWaveCount <= REC_WAVE_POINTS
+        //  已经能推出 drop <= m_recWaveCount, 这里写成显式钳制, 免得依赖那个推导)
+        if (drop > m_recWaveCount) drop = m_recWaveCount;
+
+        const int iKeep = m_recWaveCount - drop;
+        if (iKeep > 0)
+            std::memmove(m_recWave, m_recWave + drop,
+                         sizeof(m_recWave[0]) * static_cast<size_t>(iKeep));
+        m_recWaveCount = iKeep;
+    }
+
+    // 新点接到末尾
+    for (int i = 0; i < avail; ++i){
+        m_recWave[m_recWaveCount][0] = m_waveRing[m_waveReadPos][0];
+        m_recWave[m_recWaveCount][1] = m_waveRing[m_waveReadPos][1];
+        ++m_recWaveCount;
+        m_waveReadPos = (m_waveReadPos + 1) % WAVE_RING_POINTS;
+    }
 }
 
 /**
@@ -189,6 +285,11 @@ LRESULT CMainWindows::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 OnTimerTick();
             return 0;
 
+        case WM_WAVE_DATA:                   // 音频线程推来了新波形, 在这里(UI 线程)取走
+            ConsumeWaveRing();
+            InvalidateWave();
+            return 0;
+
         case WM_LBUTTONDOWN:                 // 进度条上按下: 进入"预览拖动"
             if (m_isPlaying){
                 int cx = (short)LOWORD(lParam);          // 客户区 x
@@ -221,10 +322,11 @@ LRESULT CMainWindows::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             }
             return 0;
 
-        case WM_PAINT: {                     // 绘制进度条
+        case WM_PAINT: {                     // 绘制进度条 + 波形
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
             DrawProgress(hdc);
+            DrawWaveform(hdc);
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -283,11 +385,23 @@ void CMainWindows::AudioStartStopRec(){
     if (!SdkReady()) return;
     if (!m_isRecording){
         // ---- 开始录音 ----
+        // 先注册波形回调, 再开设备 —— 反过来的话第一块(100ms)的数据会漏掉。
+        // 必须"每次开始录音都注册": SDK 在 StopRecording 里会清掉回调
+        // (那时设备已静默, 清是安全的), 若只在窗口创建时注册一次,
+        // 第二次录音起就再也收不到波形了。
+        m_api.RecorderSetWaveCallback(m_recorderHandle, &CMainWindows::OnWaveFromAudio, this);
+
+        // 波形从头开始: 丢掉上一轮的滚动窗口, 并把环形缓冲的读游标追到写游标
+        // (否则新一轮录音会接着上一次的波形往后画)
+        m_recWaveCount = 0;
+        m_waveReadPos = m_waveWritePos.load(std::memory_order_acquire);
+
         // C 接口返回的是 int 状态码, 想按名字判断就转回枚举(AudioSdkState 序号两端一致)
         if (m_api.RecorderStart(m_recorderHandle) != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
             MessageBoxW(m_hwnd, L"打开录音设备失败", L"录音", MB_OK | MB_ICONERROR);
             return;
         }
+        InvalidateWave();
         m_isRecording = true;
         m_recPaused   = false;
         SetWindowTextW(m_hBtnRec_Start_Stop, L"停止录音");
@@ -421,6 +535,14 @@ void CMainWindows::AudioStartStopPlay(){
         return;
     }
 
+    // 播放已开始: 让 SDK 把整段波形算出来。
+    // 这是同步回调(在 UI 线程内跑完), 回调直接把数据填进 m_fileWave, 无并发。
+    m_fileWaveCount = 0;    // 先清空: 万一新文件算不出波形, 也别留着上一个文件的
+    m_api.PlayerBuildWaveform(m_playerHandle, &CMainWindows::OnWaveFromFile, this);
+
+    // 刷新波形区
+    InvalidateWave();
+
     m_isPlaying  = true;
     m_playPaused = false;
     m_dragging   = false;
@@ -486,6 +608,10 @@ DWORD CMainWindows::ClampToBytes(int iClientX){
 void CMainWindows::InvalidateProgress(){
     RECT rc = ProgressRect();
     InvalidateRect(m_hwnd, &rc, FALSE);
+
+    // 刷新波形区
+    if (m_isPlaying)
+        InvalidateWave();
 }
 
 /**
@@ -559,6 +685,146 @@ void CMainWindows::DrawProgress(HDC hdc){
     }
 
     FrameRect(hdc, &rc, (HBRUSH)GetStockObject(GRAY_BRUSH));  // 边框
+}
+
+// --------------波形相关------------------
+
+/**
+ * @brief 波形区在客户区的矩形
+ * @return RECT 波形区矩形(在进度条下方)
+ */
+RECT CMainWindows::WaveRect() const{
+    RECT rc = { 10, 110, 590, 360 };
+    return rc;
+}
+
+/**
+ * @brief 让波形区重绘
+ */
+void CMainWindows::InvalidateWave(){
+    RECT rc = WaveRect();
+    InvalidateRect(m_hwnd, &rc, FALSE);
+}
+
+/**
+ * @brief 自绘波形: 背景 + 中轴线 + 波形(上下对称) + 播放位置竖线
+ * @param hdc 设备上下文
+ * @note 数据源按当前状态选: 录音中画实时滚动波形, 播放中画整段文件波形。
+ *       点数多于像素列时, 按列再合并一次(取该列覆盖范围的 min/max) —— 这样
+ *       不管缓冲里有多少点, 都能完整落到画布上, 不会丢峰。
+ */
+void CMainWindows::DrawWaveform(HDC hdc){
+    const RECT rc = WaveRect();
+
+    // 背景
+    HBRUSH brBg = CreateSolidBrush(RGB(250, 250, 250));
+    FillRect(hdc, &rc, brBg);
+    DeleteObject(brBg);
+
+    const int midY  = (rc.top + rc.bottom) / 2;
+    const int halfH = (rc.bottom - rc.top) / 2 - 2;   // 留 2px 边距, 满幅时也不贴边
+
+    // 中轴线(零电平)
+    HPEN penAxis = CreatePen(PS_SOLID, 1, RGB(210, 210, 210));
+    HPEN penOld  = (HPEN)SelectObject(hdc, penAxis);
+    MoveToEx(hdc, rc.left, midY, NULL);
+    LineTo(hdc, rc.right, midY);
+    SelectObject(hdc, penOld);
+    DeleteObject(penAxis);
+
+    // 选数据源: 录音中看实时输入, 否则看已打开文件的整段波形
+    // (停止播放后仍然保留文件波形, 方便回看; 只是不再画播放位置竖线)
+    const float (*data)[2] = nullptr;
+    int count = 0;
+    if (m_isRecording){
+        data  = m_recWave;
+        count = m_recWaveCount;
+    }
+    else {
+        data  = m_fileWave;
+        count = m_fileWaveCount;
+    }
+
+    if (data && count > 0){
+        const int w = rc.right - rc.left;
+
+        // 每个像素列对应缓冲里的一段 [i0, i1): 把这段的 min/max 合起来再画
+        HPEN penWave = CreatePen(PS_SOLID, 1, RGB(0, 120, 215));
+        penOld = (HPEN)SelectObject(hdc, penWave);
+
+        for (int x = 0; x < w; ++x){
+            int i0 = (int)((long long)x * count / w);
+            int i1 = (int)((long long)(x + 1) * count / w);
+            if (i1 <= i0) i1 = i0 + 1;                 // 点数少于列数时至少取一个
+            if (i0 >= count) break;
+
+            float mn = data[i0][0];
+            float mx = data[i0][1];
+            for (int i = i0 + 1; i < i1 && i < count; ++i){
+                if (data[i][0] < mn) mn = data[i][0];
+                if (data[i][1] > mx) mx = data[i][1];
+            }
+
+            // 归一化的 [-1,1] → 屏幕 y。max 在上, min 在下。
+            int yTop = midY - (int)(mx * halfH);
+            int yBot = midY - (int)(mn * halfH);
+            if (yTop == yBot) yBot = yTop + 1;         // 静音时给 1px 高度, 不然画不出来
+            if (yTop < rc.top)    yTop = rc.top;
+            if (yBot > rc.bottom) yBot = rc.bottom;
+
+            const int px = rc.left + x;
+            MoveToEx(hdc, px, yTop, NULL);
+            LineTo(hdc, px, yBot);
+        }
+
+        SelectObject(hdc, penOld);
+        DeleteObject(penWave);
+
+        // 播放中: 在波形上叠一条当前位置的竖线
+        if (m_isPlaying && m_playTotalBytes > 0){
+            int px = rc.left + (int)((double)m_playPosBytes / m_playTotalBytes * w);
+            if (px < rc.left) px = rc.left;
+            if (px > rc.right - 1) px = rc.right - 1;
+
+            HPEN penCur = CreatePen(PS_SOLID, 2, RGB(232, 17, 35));
+            penOld = (HPEN)SelectObject(hdc, penCur);
+            MoveToEx(hdc, px, rc.top, NULL);
+            LineTo(hdc, px, rc.bottom);
+            SelectObject(hdc, penOld);
+            DeleteObject(penCur);
+        }
+
+        // 缩放标注: 录音看的是"最近一小段"(滚动窗口), 播放看的是"整个文件",
+        // 两者时间跨度差很多, 波形看起来自然不一样。不标出来容易让人以为
+        // "同一个文件怎么长得不同" —— 其实只是缩放级别不同, 数据没差别。
+        wchar_t span[16], hint[64];
+        if (m_isRecording){
+            // 窗口还没填满时, 显示的就是已经攒到的那一段;
+            // 填满之后固定为整个窗口长度(之后就是滚动, 不再变长)
+            const int shown = m_recWaveCount < REC_WAVE_POINTS ? m_recWaveCount : REC_WAVE_POINTS;
+            // 每块 100ms 产出 AUDIO_SDK_WAVE_BLOCK_POINTS 个点 → 每点 100/256 ms
+            FormatMs(span, std::size(span), (DWORD)(shown * 100 / AUDIO_SDK_WAVE_BLOCK_POINTS));
+            swprintf_s(hint, std::size(hint), L"录音中 · 显示最近 %s", span);
+        }
+        else{
+            FormatMs(span, std::size(span), m_api.PlayerGetTotalPosMs(m_playerHandle));
+            swprintf_s(hint, std::size(hint), L"全长 %s", span);
+        }
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(130, 130, 130));
+        RECT rcHint = { rc.left + 6, rc.top + 4, rc.right - 6, rc.top + 22 };
+        DrawTextW(hdc, hint, -1, &rcHint, DT_LEFT | DT_TOP | DT_SINGLELINE);
+    }
+    else{
+        // 没数据时给个提示文字, 免得空白让人以为坏了
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(160, 160, 160));
+        RECT rcText = rc;
+        DrawTextW(hdc, L"录音或播放时显示波形", -1, &rcText,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    FrameRect(hdc, &rc, (HBRUSH)GetStockObject(GRAY_BRUSH));   // 边框
 }
 
 /**

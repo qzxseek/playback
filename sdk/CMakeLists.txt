@@ -25,11 +25,18 @@ else()
     message(FATAL_ERROR "audio_sdk: 暂不支持的平台 ${CMAKE_SYSTEM_NAME}")
 endif()
 
+# 平台无关的公共源。抽成变量是必要的: 之前每个目标各抄一份列表,
+# 新加 waveform.cpp 时漏改了两个测试目标 → LNK2019。集中一处就不会再漏。
+set(SDK_COMMON_SOURCES
+    src/common/wav_format.cpp
+    src/common/encrypted_format.cpp
+    src/common/waveform.cpp        # 波形峰值计算(两平台共用)
+)
+
 # SDK 动态库
 add_library(audio_sdk SHARED
     ${PLATFORM_SOURCES}
-    src/common/wav_format.cpp
-    src/common/encrypted_format.cpp
+    ${SDK_COMMON_SOURCES}
     src/common/wav_validate.cpp
     src/common/audio_c_api.cpp     # C 接口层(extern "C" 导出, 供 Windows UI 显式加载)
 )
@@ -48,8 +55,7 @@ if(WIN32)
     add_executable(test_win_record
         test/win_test_record.cpp
         src/windows/audio_recorder.cpp
-        src/common/wav_format.cpp
-        src/common/encrypted_format.cpp
+        ${SDK_COMMON_SOURCES}
     )
     target_include_directories(test_win_record PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -63,8 +69,7 @@ if(WIN32)
         test/win_test_play.cpp
         src/windows/audio_player.cpp
         src/common/wav_validate.cpp
-        src/common/wav_format.cpp
-        src/common/encrypted_format.cpp
+        ${SDK_COMMON_SOURCES}
     )
     target_include_directories(test_win_play PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include

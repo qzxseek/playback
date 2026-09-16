@@ -4,16 +4,25 @@
            仅在 Android/NDK 下编译(依赖 <aaudio/AAudio.h>, 要求 API 26+)。
            对外接口见 audio_sdk/audio_recorder.h(平台无关)。
 */
-#include "audio_sdk/audio_recorder.h"       // 平台无关接口(PIMPL)
-#include "audio_sdk/wav_format.h"    // SaveWavFile(bEncrypt=true 落 .aenc)
+#include "audio_sdk/audio_recorder.h"      
+#include "audio_sdk/wav_format.h"    
+#include "audio_sdk/waveform.h"      
 
 #include <aaudio/AAudio.h>
+#include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
 // 单声道 16bit: 每帧 2 字节(回调给的 numFrames 是帧数)
 static constexpr int kBytesPerFrame = CHANNELS * (BITS_PER_SAMPLE / 8);
+
+// 波形聚合缓冲: 攒够这么多个采样才算一次峰值推给调用方。
+// 为什么需要它: AAudio 回调比 winmm 频繁得多(块小、次数多),
+// 每来一次回调就推一遍波形会把 UI 淹掉; 攒到与 winmm 一块(100ms)相当再推,
+// 两个平台给 UI 的数据节奏就一致了。
+static constexpr size_t kAccumSamples = SAMPLE_RATE / 10;   // 100ms 的采样数
 
 /**
  * @brief 音频录制实现(Android, PIMPL: AAudio 全部收在 Impl 内, 不泄露到接口头)
@@ -28,11 +37,21 @@ struct CAudioRecorder::Impl{
     aaudio_data_callback_result_t OnAudioReady(void* audioData, int32_t numFrames);
 
     std::string m_outputName = "output";   // 落盘名(不含扩展名)
-    bool m_isRecording   = false;
+    // 跨线程读写: UI 线程置位, 音频线程在 OnAudioReady 里读 → 必须原子
+    std::atomic<bool> m_isRecording{false};
     bool m_isPaused      = false;
-    bool m_isAencEncrypt = true;            
-    AAudioStream* m_stream = nullptr;      
-    std::vector<uint8_t> m_vecPcmData;     
+    bool m_isAencEncrypt = true;
+    AAudioStream* m_stream = nullptr;
+    std::vector<uint8_t> m_vecPcmData;
+
+    // ---- 波形 ----
+    // 回调指针用原子: UI 线程注册/注销, 音频线程取快照(音频线程不能加锁)
+    std::atomic<AudioSdkWaveCallback> m_waveCb{nullptr};
+    std::atomic<void*>                m_waveUser{nullptr};
+    // 以下三个缓冲都预先分配 —— 音频线程里只算不分配(分配会导致爆音)
+    int16_t m_waveAccum[kAccumSamples] = {};                   // 攒采样的定长缓冲
+    size_t  m_waveAccumCount = 0;                              // 已攒采样数
+    float   m_waveBuf[CWaveform::kPointsPerBlock * 2] = {};    // 算好的峰值(给回调)
 };
 
 CAudioRecorder::CAudioRecorder() : m_impl(new Impl()) {}
@@ -51,9 +70,10 @@ CAudioRecorder::~CAudioRecorder(){
  */
 AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     Impl* p = m_impl;
-    if (p->m_isRecording) return AudioSdk::AudioSdkState::NONE;
+    if (p->m_isRecording.load()) return AudioSdk::AudioSdkState::NONE;
 
     p->m_vecPcmData.clear();
+    p->m_waveAccumCount = 0;      // 上一轮的残留采样不带到这一轮
     p->m_isPaused = false;
 
     AAudioStreamBuilder* builder = nullptr;
@@ -94,7 +114,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
  */
 void CAudioRecorder::PauseResumeRecording() {
     Impl* p = m_impl;
-    if (!p->m_isRecording || !p->m_stream) return;
+    if (!p->m_isRecording.load() || !p->m_stream) return;
     if (p->m_isPaused) {
         AAudioStream_requestStart(p->m_stream);   // 继续采
         p->m_isPaused = false;
@@ -112,15 +132,20 @@ void CAudioRecorder::PauseResumeRecording() {
  */
 AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
     Impl* p = m_impl;
-    if (!p->m_isRecording) return AudioSdk::AudioSdkState::NONE;
+    if (!p->m_isRecording.load()) return AudioSdk::AudioSdkState::NONE;
 
-    p->m_isRecording = false;
+    p->m_isRecording = false;    // 先置位: 音频线程此后不再往 UI 推波形
     p->m_isPaused = false;
     if (p->m_stream) {
         AAudioStream_requestStop(p->m_stream);    // 先停回调, 再动数据
         AAudioStream_close(p->m_stream);
         p->m_stream = nullptr;
     }
+
+    // 流已关闭, 不会再有在途回调, 此时注销波形回调是安全的
+    p->m_waveCb.store(nullptr, std::memory_order_release);
+    p->m_waveUser.store(nullptr, std::memory_order_relaxed);
+    p->m_waveAccumCount = 0;
 
     // 此刻回调已停, 不会再写 m_vecPcmData, 可直接访问——这就是"先 stop 再落盘"的原因
     std::string outFile = p->m_outputName + (p->m_isAencEncrypt ? ".aenc" : ".wav");
@@ -152,10 +177,32 @@ void CAudioRecorder::Impl::ErrorCallback(
  */
 aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
         void* audioData, int32_t numFrames) {
-    if (!m_isRecording)
+    if (!m_isRecording.load(std::memory_order_acquire))
         return AAUDIO_CALLBACK_RESULT_STOP;       // 不该来的回调, 让它停
     const size_t bytes = static_cast<size_t>(numFrames) * kBytesPerFrame;
     auto* pcm = static_cast<const uint8_t*>(audioData);
+
+    // ---- 1) 波形: 先攒够一块, 再算一次峰值推出去 ----
+    // 跑在音频线程: 只用预分配的定长缓冲, 不分配内存、不加锁
+    if (const AudioSdkWaveCallback cb = m_waveCb.load(std::memory_order_acquire)) {
+        const size_t room = sizeof(m_waveAccum) - m_waveAccumCount * sizeof(int16_t);
+        const size_t n = bytes < room ? bytes : room;   // 极端情况装不下就只收这么多,
+                                                        // 丢的是波形(主录音数据不受影响)
+        std::memcpy(reinterpret_cast<uint8_t*>(m_waveAccum)
+                        + m_waveAccumCount * sizeof(int16_t),
+                    pcm, n);
+        m_waveAccumCount += n / sizeof(int16_t);
+
+        if (m_waveAccumCount * sizeof(int16_t) >= sizeof(m_waveAccum)) {
+            CWaveform::ComputePeaks(m_waveAccum, sizeof(m_waveAccum),
+                                    m_waveBuf, CWaveform::kPointsPerBlock);
+            cb(m_waveBuf, CWaveform::kPointsPerBlock,
+               m_waveUser.load(std::memory_order_relaxed));
+            m_waveAccumCount = 0;
+        }
+    }
+
+    // ---- 2) 录进内存 ----
     m_vecPcmData.insert(m_vecPcmData.end(), pcm, pcm + bytes);
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
@@ -166,11 +213,25 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
  */
 void CAudioRecorder::SetAencEncrypt() {
     Impl* p = m_impl;
-    if (p->m_isRecording) return;       // 录制中不许切, 和 Windows 一致
+    if (p->m_isRecording.load()) return;   // 录制中不许切, 和 Windows 一致
     p->m_isAencEncrypt = !p->m_isAencEncrypt;
 }
 
 bool CAudioRecorder::GetAencEncrypt() const { return m_impl->m_isAencEncrypt; }
+
+/**
+ * @brief 注册/取消录音波形回调
+ * @param cb 回调(传 NULL 取消)
+ * @param userData 透传给回调的指针
+ * @note 只改两个原子指针, 不加锁 —— 音频线程用"取快照"的方式读。
+ *       注销后可能还有一个在途回调正在执行, 调用方要保证 userData
+ *       指向的对象存活到"确定没有回调在跑"之后(通常是 StopRecording 返回后)。
+ */
+void CAudioRecorder::SetWaveCallback(AudioSdkWaveCallback cb, void* userData) {
+    Impl* p = m_impl;
+    p->m_waveUser.store(userData, std::memory_order_relaxed);   // 先给 userData
+    p->m_waveCb.store(cb, std::memory_order_release);           // 再发布回调
+}
 
 bool CAudioRecorder::GetIsPaused() const { return m_impl->m_isPaused; }
 

@@ -42,10 +42,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow){
         return 0;
 
     // 创建主窗口(触发 WM_CREATE → mainWindow 建控件)
+    // 高度要放得下"控件区 + 进度条 + 波形区"(波形区底边在客户区 y=360),
+    // 再算上标题栏和边框, 总高给 430 才够
     HWND hwnd = CreateWindowExW(
         0, kClassName, L"Win32 音频播放器",
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 600, 240,
+        CW_USEDEFAULT, CW_USEDEFAULT, 600, 430,
         NULL, NULL, hInstance, NULL);
     if (!hwnd)
         return 0;

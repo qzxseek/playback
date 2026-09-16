@@ -67,6 +67,13 @@ AUDIO_API int      AudioSdk_PlayerIsPlaying(void* handle);     // 1=在播, 0=�
 AUDIO_API uint32_t AudioSdk_PlayerGetPlayPosMs(void* handle);   // 当前播放位置(毫秒)
 AUDIO_API uint32_t AudioSdk_PlayerGetTotalPosMs(void* handle);  // 总时长(毫秒); 未加载文件为 0
 
+// 取整个文件的波形(降采样成 CWaveform::kFilePoints 个峰值点)。
+// 在【调用线程】同步回调一次(通常就是 UI 线程), 无并发问题。
+// 回调返回后缓冲即失效, 需要就自己拷走。
+AUDIO_API void AudioSdk_PlayerBuildWaveform(void* handle,
+                                            AudioSdkWaveCallback cb,
+                                            void* userData);
+
 // ==================== 录音器 ====================
 
 // 创建录音器对象; 成功返回句柄(非空), 失败返回 NULL
@@ -90,6 +97,13 @@ AUDIO_API void AudioSdk_RecorderSetAencEncrypt(void* handle);
 AUDIO_API int      AudioSdk_RecorderGetAencEncrypt(void* handle);    // 1=加密保存
 AUDIO_API int      AudioSdk_RecorderGetIsPaused(void* handle);       // 1=已暂停
 AUDIO_API uint32_t AudioSdk_RecorderGetRecordedMs(void* handle);     // 已录时长(毫秒)
+
+// 注册/取消录音波形回调(cb 传 NULL 取消), 录制中每积累一块就回调一次。
+// 回调跑在【音频线程】: 只许做"拷贝数据 + PostMessage", 禁止分配内存/加锁/操作 UI。
+// 停止录音前建议先传 NULL 取消注册。
+AUDIO_API void AudioSdk_RecorderSetWaveCallback(void* handle,
+                                                AudioSdkWaveCallback cb,
+                                                void* userData);
 
 AUDIO_API int AudioSdk_IsAencFile(const char* utf8Path);   // 1=加密, 0=否
 
@@ -135,6 +149,7 @@ struct AudioSdkApi{
     decltype(&::AudioSdk_PlayerIsPlaying)              PlayerIsPlaying   = nullptr;
     decltype(&::AudioSdk_PlayerGetPlayPosMs)      PlayerGetPlayPosMs  = nullptr;
     decltype(&::AudioSdk_PlayerGetTotalPosMs)     PlayerGetTotalPosMs = nullptr;
+    decltype(&::AudioSdk_PlayerBuildWaveform)     PlayerBuildWaveform = nullptr;
 
     // —— 录音器 ——
     decltype(&::AudioSdk_RecorderCreate)                   RecorderCreate            = nullptr;
@@ -146,6 +161,7 @@ struct AudioSdkApi{
     decltype(&::AudioSdk_RecorderGetAencEncrypt)       RecorderGetAencEncrypt    = nullptr;
     decltype(&::AudioSdk_RecorderGetIsPaused)          RecorderGetIsPaused       = nullptr;
     decltype(&::AudioSdk_RecorderGetRecordedMs)   RecorderGetRecordedMs     = nullptr;
+    decltype(&::AudioSdk_RecorderSetWaveCallback) RecorderSetWaveCallback   = nullptr;
     decltype(&::AudioSdk_IsAencFile)             IsAencFile                = nullptr;
 
     /**
@@ -179,6 +195,7 @@ struct AudioSdkApi{
         AUDIO_SDK_LOAD(PlayerIsPlaying,   "AudioSdk_PlayerIsPlaying");
         AUDIO_SDK_LOAD(PlayerGetPlayPosMs,  "AudioSdk_PlayerGetPlayPosMs");
         AUDIO_SDK_LOAD(PlayerGetTotalPosMs, "AudioSdk_PlayerGetTotalPosMs");
+        AUDIO_SDK_LOAD(PlayerBuildWaveform, "AudioSdk_PlayerBuildWaveform");
 
         // 录音器
         AUDIO_SDK_LOAD(RecorderCreate,            "AudioSdk_RecorderCreate");
@@ -190,6 +207,7 @@ struct AudioSdkApi{
         AUDIO_SDK_LOAD(RecorderGetAencEncrypt,    "AudioSdk_RecorderGetAencEncrypt");
         AUDIO_SDK_LOAD(RecorderGetIsPaused,       "AudioSdk_RecorderGetIsPaused");
         AUDIO_SDK_LOAD(RecorderGetRecordedMs,     "AudioSdk_RecorderGetRecordedMs");
+        AUDIO_SDK_LOAD(RecorderSetWaveCallback,   "AudioSdk_RecorderSetWaveCallback");
         AUDIO_SDK_LOAD(IsAencFile,                "AudioSdk_IsAencFile");
 
         if (!bOk) { Unload(); return false; }          // 缺符号就整体回滚, 别留半套指针

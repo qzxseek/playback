@@ -9,6 +9,7 @@
 #include "audio_sdk/wav_validate.h"
 #include "audio_sdk/wav_format.h"
 #include "audio_sdk/encrypted_format.h"
+#include "audio_sdk/waveform.h"      
 
 #include <aaudio/AAudio.h>
 #include <algorithm>
@@ -303,6 +304,29 @@ uint32_t CAudioPlayer::GetTotalPosMs() const{
     const uint32_t byteRate = m_impl->m_byteRate;
     if (byteRate == 0) return 0;
     return static_cast<uint32_t>(m_impl->m_dataSize * 1000ULL / byteRate);
+}
+
+/**
+   @brief : 取整个文件的波形(降采样成 kFilePoints 个峰值点)
+   @param : cb - 回调(传 NULL 则什么都不做)
+   @param : userData - 透传给回调的指针
+   @note 在【调用线程】同步回调一次, 不涉及音频线程。
+         m_vecPcm 在播放期间内容不变(读游标是单独的原子变量), 所以读它安全。
+         回调返回后缓冲即失效, 调用方需要就自己拷走。
+*/
+void CAudioPlayer::BuildWaveform(AudioSdkWaveCallback cb, void* userData){
+    if (!cb) return;
+
+    Impl* p = m_impl;
+    if (p->m_vecPcm.empty()) return;               // 还没加载文件
+
+    // 用栈上的定长缓冲: 1024 点 × 2 × 4 字节 = 8KB, 不必分配堆内存
+    float minmax[CWaveform::kFilePoints * 2] = {};
+
+    // 传字节指针即可, ComputePeaks 内部按字节读(不依赖 vector<uint8_t> 的对齐)
+    CWaveform::ComputePeaks(p->m_vecPcm.data(), p->m_vecPcm.size(),
+                            minmax, CWaveform::kFilePoints);
+    cb(minmax, CWaveform::kFilePoints, userData);
 }
 
 bool CAudioPlayer::IsPlaying() const{
