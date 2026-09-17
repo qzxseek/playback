@@ -30,15 +30,25 @@
                         api.Unload();          // 调用前必须先销毁全部 handle
             Windows → LoadLibraryW("audio_sdk.dll") / GetProcAddress
             Android → dlopen("libaudio_sdk.so")     / dlsym
-                      前提: SDK 要单独编成 libaudio_sdk.so 随 APK 装进 jniLibs,
-                      而且桥自己的 .so 不要链它 —— 链了就成了隐式加载, 白搭。
+                      前提: ① Android 8.0(API 26)及以上 —— AAudio 从 API 26 才有;
+                            ② SDK 要单独编成 libaudio_sdk.so 随 APK 装进 jniLibs;
+                            ③ 桥自己的 .so 不要链它
 */
 #pragma once
 
-#include "audio_sdk/audio_export.h"   
-#include "audio_sdk/audio_types.h"    
+#include "audio_sdk/audio_export.h"
+#include "audio_sdk/audio_types.h"
 
 #include <stdint.h>
+
+// ==================== 平台版本要求 ====================
+#if defined(__ANDROID__)
+  #if !defined(__ANDROID_API__)
+    #error "audio_sdk: __ANDROID_API__ is not defined. Use the NDK toolchain (it derives this from -target ...androidNN), or pass -D__ANDROID_API__=26."
+  #elif __ANDROID_API__ < 26
+    #error "audio_sdk: Android API 26 (8.0) or newer is required - AAudio was introduced in API 26 and libaaudio.so does not exist below it. Set minSdkVersion 26 in build.gradle, or pass -DANDROID_PLATFORM=android-26 to CMake."
+  #endif
+#endif
 
 #ifdef __cplusplus
 extern "C" {
