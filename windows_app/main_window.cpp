@@ -2,7 +2,7 @@
    @Author : 孟源
    @note : Win32 音频 UI 主窗口实现
 */
-#include "main_window.h"
+#include "include/main_window.h"
 
 #include <cstring>      // std::memmove(滚动窗口批量左移)
 #include <iterator>     // std::size(取数组元素个数, 传给 swprintf_s 做容量)

@@ -9,16 +9,18 @@ if(MSVC)
     add_compile_options(/utf-8)
 endif()
 
-# UI 可执行程序: main.cpp(入口) + main_window.cpp(窗口类实现)
+# UI 可执行程序: main.cpp(入口) + main_window.cpp(窗口类实现) + crash_dump.cpp(崩溃转储)
 add_executable(audio_win_app
     main.cpp
     main_window.cpp
+    crash_dump.cpp
 )
 
 set_target_properties(audio_win_app PROPERTIES WIN32_EXECUTABLE ON)
 
 target_include_directories(audio_win_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../sdk/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 # 显式加载不需要导入库(.lib): 运行期靠 LoadLibrary("audio_sdk.dll") + GetProcAddress 自己找符号。

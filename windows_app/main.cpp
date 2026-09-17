@@ -18,8 +18,9 @@
 #endif
 
 #include <windows.h>
-#include <mmeapi.h>          
-#include "main_window.h"
+#include <mmeapi.h>
+#include "include/main_window.h"
+#include "include/crash_dump.h"     
 
 // 全局实例指针: main_window.cpp 的静态 WndProc 靠它转发消息到实例方法
 CMainWindows* g_pMain = nullptr;
@@ -28,7 +29,10 @@ CMainWindows* g_pMain = nullptr;
 constexpr wchar_t kClassName[] = L"AudioRecPlayMainWnd";
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow){
-    
+
+    // 安装崩溃处理器
+    InstallCrashHandler();
+
     CMainWindows mainWindow;
     g_pMain = &mainWindow;                     // WndProc 现在能把消息转给它
 
