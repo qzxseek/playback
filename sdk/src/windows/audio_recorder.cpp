@@ -40,7 +40,9 @@ struct CAudioRecorder::Impl{
 
    HWAVEIN   m_hWaveIn   = NULL;         // 句柄
    WAVEHDR   m_waveHdrIn[BUFFER_COUNT];  // 音频缓冲区
-   std::vector<BYTE> m_recordedData;     // 录制数据
+   std::vector<BYTE> m_vecRecData;     // 录制数据
+   // 已录字节数
+   std::atomic<size_t> m_recordedBytes{0};
    // 跨线程读写: UI 线程置位, 音频线程在 OnBufferDone 里读 → 必须原子
    std::atomic<bool> m_isRecording{false};  // 是否正在录制
    bool      m_isPaused    = false;      // 是否正在暂停录制
@@ -95,7 +97,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
       return AudioSdk::AudioSdkState::DEVICE_BUSY;             // 设备已被占用
    }
 
-   p->m_recordedData.clear();     // 清空录制数据
+   p->m_vecRecData.clear();     // 清空录制数据
+   p->m_recordedBytes.store(0, std::memory_order_relaxed);   // 计数跟着清零
    p->m_isRecording = true;       // 标记为正在录制
 
    // 初始化缓冲区
@@ -155,8 +158,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
    std::wstring outFile = p->m_outputName;
    outFile += p->m_isAencEncrypt ? L".aenc" : L".wav";
    const std::string utf8Path = WideToUtf8(outFile);   // 宽路径 → UTF-8 再交给格式层
-   CWavFormat::SaveWavFile(utf8Path.c_str(), p->m_recordedData.data(),
-                           p->m_recordedData.size(), p->m_isAencEncrypt);
+   CWavFormat::SaveWavFile(utf8Path.c_str(), p->m_vecRecData.data(),
+                           p->m_vecRecData.size(), p->m_isAencEncrypt);
 
    return AudioSdk::AudioSdkState::NONE;
 }
@@ -191,8 +194,9 @@ void CAudioRecorder::Impl::OnBufferDone(WAVEHDR* hdr) {
    }
 
    // 复制数据到录制数据向量
-   m_recordedData.insert(m_recordedData.end(), reinterpret_cast<BYTE*>(hdr->lpData),
+   m_vecRecData.insert(m_vecRecData.end(), reinterpret_cast<BYTE*>(hdr->lpData),
    reinterpret_cast<BYTE*> (hdr->lpData) + hdr->dwBytesRecorded);
+   m_recordedBytes.store(m_vecRecData.size(), std::memory_order_relaxed);
    if(m_isRecording)
       waveInAddBuffer(m_hWaveIn, hdr, sizeof(WAVEHDR));
 }
@@ -223,7 +227,7 @@ uint32_t CAudioRecorder::GetRecordedMs() const{
    const uint32_t byteRate = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8);
    if (byteRate == 0) return 0;
    // 先乘后除(乘 1000ULL 避免 32 位溢出), 拿到的才是毫秒
-   return static_cast<uint32_t>(m_impl->m_recordedData.size() * 1000ULL / byteRate);
+   return static_cast<uint32_t>(m_impl->m_recordedBytes.load(std::memory_order_relaxed) * 1000ULL / byteRate);
 }
 
 /**

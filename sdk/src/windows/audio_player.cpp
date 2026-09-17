@@ -11,6 +11,7 @@
 #include <synchapi.h>
 #include <windows.h>
 #include <mmeapi.h>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -51,13 +52,18 @@ struct CAudioPlayer::Impl
     static const int m_iBlockCount = 4;      // 缓冲池块数
 
     HWAVEOUT  m_hWaveOut  = NULL;
-    bool      m_isPlaying = false;           // 是否正在播放
-    bool      m_isPaused  = false;           // 是否暂停
+    // 跨线程读写: 播放线程在 FeedLoop 里置 false, UI 线程在 Stop/Seek/Pause/IsPlaying 里读
+    //   → 必须原子。UI 侧的读都没进锁, 所以光把写挪进临界区没有用(锁只在持锁者之间建立顺序)。
+    // relaxed 够用: 它是个独立的开关量, 没有"和它配套被读的其它数据";
+    //   真正需要顺序的地方另有保障 —— StopPlay 靠 WaitForSingleObject(线程退出),
+    //   Seek 靠紧随其后的 EnterCriticalSection。
+    std::atomic<bool> m_isPlaying{false};    // 是否正在播放
+    bool      m_isPaused  = false;           // 是否暂停(仅 UI 线程碰, 无需原子)
 
     std::vector<BYTE> m_vecPcm;              // PCM 数据缓
     size_t m_readPos = 0;                     // 数据加载位置
     size_t m_dataSize = 0;                    // 数据大小
-    size_t m_playPos = 0;                     // 播放位置
+    std::atomic<size_t> m_playPos{0};         // 播放位置
     WAVEFORMATEX m_fmt = {};                  // 音频格式描述
 
     struct Block{
@@ -170,7 +176,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
 
    p->m_dataSize = p->m_vecPcm.size();  // 记录数据大小
    p->m_readPos = 0;  // 初始化读取位置为 0
-   p->m_playPos = 0;  // 初始化播放位置为 0
+   p->m_playPos.store(0, std::memory_order_relaxed);  // 初始化播放位置为 0
 
    const size_t blockSize = p->m_fmt.nBlockAlign * 2048;      // 缓冲区大小 ~46ms/块
    p->m_vecBlocks.resize(p->m_iBlockCount);
@@ -204,7 +210,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
       return AudioSdk::AudioSdkState::UNKNOWN_ERROR;
    }
 
-   p->m_isPlaying = true;
+   p->m_isPlaying.store(true, std::memory_order_relaxed);
    p->m_isPaused = false;
 
    p->m_hThread = CreateThread(NULL,0,[](LPVOID arg)->DWORD{
@@ -212,7 +218,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
       return 0;
    },p,0,NULL);
    if (p->m_hThread == NULL) {                // 线程没起来, 状态和设备都回滚
-      p->m_isPlaying = false;
+      p->m_isPlaying.store(false, std::memory_order_relaxed);
       p->CleanUpDevice();
       return AudioSdk::AudioSdkState::UNKNOWN_ERROR;
    }
@@ -256,7 +262,7 @@ void CAudioPlayer::Impl::FeedLoop(){
       DWORD held = 0;                  // 未播放完的部分
       for(auto& block : m_vecBlocks) if (block.isDevice) held += block.waveHdr.dwBufferLength;
 
-      m_playPos = m_readPos - held;
+      m_playPos.store(m_readPos - held, std::memory_order_relaxed);
       bool bDev = false;
       for(auto& block : m_vecBlocks) if (block.isDevice) bDev = true;
       bool bFileDone = (m_readPos >= m_dataSize);
@@ -264,7 +270,7 @@ void CAudioPlayer::Impl::FeedLoop(){
 
       // 所有工作块都已播放完，且文件已读取完，播放结束
       if (!bDev && bFileDone) {
-         m_isPlaying = false;
+         m_isPlaying.store(false, std::memory_order_relaxed);
          break;
       }
    }
@@ -328,7 +334,7 @@ void CAudioPlayer::Impl::CleanUpDevice(){
 */
 AudioSdk::AudioSdkState CAudioPlayer::Seek(uint32_t posBytes){
    Impl* p = m_impl;
-   if (!p->m_isPlaying) return AudioSdk::AudioSdkState::INVALID_PARAMETER;
+   if (!p->m_isPlaying.load(std::memory_order_relaxed)) return AudioSdk::AudioSdkState::INVALID_PARAMETER;
 
    auto align = p->m_fmt.nBlockAlign;
    if (align) posBytes -= posBytes % align;        // 帧对齐
@@ -360,7 +366,7 @@ AudioSdk::AudioSdkState CAudioPlayer::Seek(uint32_t posBytes){
 */
 void CAudioPlayer::PausePlay(){             // 暂停播放
    Impl* p = m_impl;
-   if (p->m_isPaused || !p->m_isPlaying) return;
+   if (p->m_isPaused || !p->m_isPlaying.load(std::memory_order_relaxed)) return;
    waveOutPause(p->m_hWaveOut);
    p->m_isPaused = true;
 }
@@ -370,7 +376,7 @@ void CAudioPlayer::PausePlay(){             // 暂停播放
 */
 void CAudioPlayer::ResumePlay(){             // 继续播放
    Impl* p = m_impl;
-   if (!p->m_isPaused || !p->m_isPlaying) return;
+   if (!p->m_isPaused || !p->m_isPlaying.load(std::memory_order_relaxed)) return;
    waveOutRestart(p->m_hWaveOut);
    p->m_isPaused = false;
 }
@@ -380,7 +386,7 @@ void CAudioPlayer::ResumePlay(){             // 继续播放
 */
 void CAudioPlayer::StopPlay(){             // 停止播放
    Impl* p = m_impl;
-   if (!p->m_isPlaying) {
+   if (!p->m_isPlaying.load(std::memory_order_relaxed)) {
       // 句柄存在, 等待线程退出后置空
       if (p->m_hThread) {
          WaitForSingleObject(p->m_hThread, INFINITE);   // 等它彻底退出再关
@@ -401,14 +407,14 @@ void CAudioPlayer::StopPlay(){             // 停止播放
    }
    p->CleanUpDevice();
    p->m_isPaused = false;
-   p->m_isPlaying = false;
+   p->m_isPlaying.store(false, std::memory_order_relaxed);
 }
 
 /**
    @brief : 获取当前播放位置
 */
 uint32_t CAudioPlayer::GetPlayPos() const{
-   return static_cast<uint32_t>(m_impl->m_playPos);
+   return static_cast<uint32_t>(m_impl->m_playPos.load(std::memory_order_relaxed));
 }
 
 uint32_t CAudioPlayer::GetTotalPos() const{
@@ -423,7 +429,7 @@ uint32_t CAudioPlayer::GetPlayPosMs() const{
    const uint32_t byteRate = m_impl->m_fmt.nAvgBytesPerSec;
    if (byteRate == 0) return 0;                       // 未加载文件, 别除零
    // 先乘后除(乘 1000ULL 避免 32 位溢出), 拿到的才是毫秒
-   return static_cast<uint32_t>(m_impl->m_playPos * 1000ULL / byteRate);
+   return static_cast<uint32_t>(m_impl->m_playPos.load(std::memory_order_relaxed) * 1000ULL / byteRate);
 }
 
 /**
@@ -460,7 +466,7 @@ void CAudioPlayer::BuildWaveform(AudioSdkWaveCallback cb, void* userData){
 }
 
 bool CAudioPlayer::IsPlaying() const{
-   return m_impl->m_isPlaying;
+   return m_impl->m_isPlaying.load(std::memory_order_relaxed);
 }
 
 bool CAudioPlayer::IsPaused() const{

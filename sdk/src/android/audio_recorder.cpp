@@ -42,7 +42,9 @@ struct CAudioRecorder::Impl{
     bool m_isPaused      = false;
     bool m_isAencEncrypt = true;
     AAudioStream* m_stream = nullptr;
-    std::vector<uint8_t> m_vecPcmData;
+    std::vector<uint8_t> m_vecPcmData;   // 只有音频线程写; 落盘在流关闭后读
+    // 已录字节数
+    std::atomic<size_t> m_recordedBytes{0};
 
     // ---- 波形 ----
     // 回调指针用原子: UI 线程注册/注销, 音频线程取快照(音频线程不能加锁)
@@ -73,6 +75,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     if (p->m_isRecording.load()) return AudioSdk::AudioSdkState::NONE;
 
     p->m_vecPcmData.clear();
+    p->m_recordedBytes.store(0, std::memory_order_relaxed);   // 计数跟着清零
     p->m_waveAccumCount = 0;      // 上一轮的残留采样不带到这一轮
     p->m_isPaused = false;
 
@@ -204,6 +207,9 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
 
     // ---- 2) 录进内存 ----
     m_vecPcmData.insert(m_vecPcmData.end(), pcm, pcm + bytes);
+    // 插完再发布计数: 计数只会落后于 vector, 不会超前 —— 它只是"进度提示",
+    // 落盘用的是 vector 自己的 size, 不以它为准。单写者用 store 比 fetch_add 便宜。
+    m_recordedBytes.store(m_vecPcmData.size(), std::memory_order_relaxed);
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
@@ -245,5 +251,5 @@ uint32_t CAudioRecorder::GetRecordedMs() const {
     const uint32_t byteRate = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8);
     if (byteRate == 0) return 0;
     // 先乘后除(乘 1000ULL 避免 32 位溢出), 拿到的才是毫秒
-    return static_cast<uint32_t>(m_impl->m_vecPcmData.size() * 1000ULL / byteRate);
+    return static_cast<uint32_t>(m_impl->m_recordedBytes.load(std::memory_order_relaxed) * 1000ULL / byteRate);
 }
