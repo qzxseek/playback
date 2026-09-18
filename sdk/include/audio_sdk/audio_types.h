@@ -13,15 +13,6 @@
 #define BITS_PER_SAMPLE 16
 #define CHANNELS        1
 
-#if (_WIN32)
-#define BUFFER_COUNT    4
-#define BUFFER_SIZE     (SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE/8) / 10) // 100ms
-
-#include "audio_sdk/audio_export.h"
-
-#include <windows.h>
-#endif
-
 
 #define AUDIO_SDK_WAVE_BLOCK_POINTS  256              // 每块(100ms)回调一次, 每次给这么多个点
 #define AUDIO_SDK_WAVE_FILE_POINTS   1024             // 整个文件的波形, 一次给这么多个点

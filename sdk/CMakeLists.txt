@@ -43,6 +43,7 @@ add_library(audio_sdk SHARED
 
 target_include_directories(audio_sdk PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform
 )
 target_link_libraries(audio_sdk PUBLIC ${PLATFORM_LIBS})
 

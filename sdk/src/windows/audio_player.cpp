@@ -8,8 +8,8 @@
 #include "audio_sdk/encrypted_format.h"
 #include "audio_sdk/waveform.h"      
 
+#include <windows.h>     // 之前靠 audio_types.h 传递进来; 必须排在 synchapi/mmeapi 前面
 #include <synchapi.h>
-#include <windows.h>
 #include <mmeapi.h>
 #include <atomic>
 #include <cstdint>

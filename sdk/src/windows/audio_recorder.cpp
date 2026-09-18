@@ -6,10 +6,18 @@
 #include "audio_sdk/wav_format.h"   // SaveWavFile：录音落盘统一走它(bEncrypt=true 存加密)
 #include "audio_sdk/waveform.h"     // CWaveform::ComputePeaks(波形降采样)
 
+#include <windows.h>     
 #include <mmeapi.h>
 #include <winuser.h>
 #include <atomic>
 #include <string>
+
+// ---- Windows 录音缓冲参数(本文件私有) ----
+namespace {
+constexpr int kBufferCount = 4;   // 环形缓冲块数: 一块在录, 其余在排队/回调, 避免丢数据
+// 每块 100ms
+constexpr size_t kBufferSize  = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8) / 10;
+}   // namespace
 
 /**
  * @brief 宽字符路径 → UTF-8(格式层接口统一 UTF-8; 设备层管本地宽路径, 交给格式层前转换)
@@ -39,7 +47,7 @@ struct CAudioRecorder::Impl{
    void OnBufferDone(WAVEHDR* hdr);                  // 缓冲区完成回调函数
 
    HWAVEIN   m_hWaveIn   = NULL;         // 句柄
-   WAVEHDR   m_waveHdrIn[BUFFER_COUNT];  // 音频缓冲区
+   WAVEHDR   m_waveHdrIn[kBufferCount];  // 音频缓冲区
    std::vector<BYTE> m_vecRecData;     // 录制数据
    // 已录字节数
    std::atomic<size_t> m_recordedBytes{0};
@@ -102,10 +110,10 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
    p->m_isRecording = true;       // 标记为正在录制
 
    // 初始化缓冲区
-   for (int iN = 0; iN < BUFFER_COUNT; iN++){
+   for (int iN = 0; iN < kBufferCount; iN++){
       ZeroMemory(&p->m_waveHdrIn[iN], sizeof(WAVEHDR));
-      p->m_waveHdrIn[iN].lpData = new char[BUFFER_SIZE];       // 分配内存
-      p->m_waveHdrIn[iN].dwBufferLength = BUFFER_SIZE;         // 设置缓冲区大小
+      p->m_waveHdrIn[iN].lpData = new char[kBufferSize];       // 分配内存
+      p->m_waveHdrIn[iN].dwBufferLength = static_cast<DWORD>(kBufferSize);   // 设置缓冲区大小
       waveInPrepareHeader(p->m_hWaveIn, &p->m_waveHdrIn[iN], sizeof(WAVEHDR));
       waveInAddBuffer(p->m_hWaveIn, &p->m_waveHdrIn[iN],sizeof(WAVEHDR));
 
@@ -143,7 +151,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
    p->m_isPaused = false;
    // 停止并清空所有缓冲区
    waveInReset(p->m_hWaveIn);
-   for (int iN = 0; iN < BUFFER_COUNT; iN++) {
+   for (int iN = 0; iN < kBufferCount; iN++) {
       waveInUnprepareHeader(p->m_hWaveIn, &p->m_waveHdrIn[iN], sizeof(WAVEHDR));
       delete[] p->m_waveHdrIn[iN].lpData;
       p->m_waveHdrIn[iN].lpData = nullptr;

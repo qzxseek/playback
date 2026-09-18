@@ -20,6 +20,7 @@ set_target_properties(audio_win_app PROPERTIES WIN32_EXECUTABLE ON)
 
 target_include_directories(audio_win_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../sdk/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../sdk/platform    # 显式加载器的平台原语(sdk/platform/windows/...)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
