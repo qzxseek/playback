@@ -20,10 +20,6 @@
 
 #include "audio_sdk/audio_c_api.h"   // 契约: 24 个 AudioSdk_* 声明(下面 decltype 要用)
 
-// 平台原语。CMake 里把 sdk/platform 加进 include 路径, 由这里的平台宏选具体文件。
-// 注意路径要写成 "windows/xxx" 而不是 "xxx": 本文件就在 sdk/platform 根下,
-// 引号 include 会先搜本文件所在目录 —— 写裸文件名会引到【自己】,
-// 于是 #pragma once 一挡, 平台原语一个都没进来, 后面全是"未定义"。
 #if defined(_WIN32)
   #include "windows/audio_sdk_loader.h"
 #elif defined(__ANDROID__)

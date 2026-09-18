@@ -3,13 +3,10 @@
    @note : 显式加载器的 Android 平台原语。
           只装"开库 / 取符号 / 关库"这三个动作的 Android 写法, 加上库句柄类型和默认库名。
           函数指针表(AudioSdkApi)是两平台共用的, 不在本文件 ——
-          见 sdk/platform/audio_sdk_loader.h。
+          见 sdk/platform/audio_sdk_loader.h
 
           本文件不直接被调用方 include: 由上一层 audio_sdk_loader.h 按平台选路径带进来。
-          怎么用见 sdk/platform/audio_sdk_loader.h 顶部的说明。
-
-          对照组: sdk/platform/windows/audio_sdk_loader.h —— 同样四个宏、同样两个类型别名。
-          两个文件只有内容不同, 形状必须一致; 改这里记得对着那边看一眼。
+          怎么用见 sdk/platform/audio_sdk_loader.h 顶部的说明
 */
 #pragma once
 
