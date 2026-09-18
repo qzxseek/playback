@@ -3,10 +3,10 @@
    @note : 显式加载器的 Windows 平台原语。
           只装"开库 / 取符号 / 关库"这三个动作的 Windows 写法, 加上库句柄类型和默认库名。
           函数指针表(AudioSdkApi)是两平台共用的, 不在本文件 ——
-          见 sdk/platform/audio_sdk_loader.h
+          见 sdk_loader/audio_sdk_loader.h
 
           本文件不直接被调用方 include: 由上一层 audio_sdk_loader.h 按平台选路径带进来。
-          怎么用见 sdk/platform/audio_sdk_loader.h 顶部的说明
+          怎么用见 sdk_loader/audio_sdk_loader.h 顶部的说明
 */
 #pragma once
 
@@ -14,7 +14,7 @@
 // 正常情况下轮不到它 —— audio_sdk_loader.h 按 _WIN32/__ANDROID__ 选路径
 // 这里是防"include 路径配错、把另一平台的头拖进来"
 #ifndef _WIN32
-  #error "audio_sdk_loader.h: 这是 Windows 平台原语, 不接受其它平台编译。请检查 __ANDROID__ 宏是否被误定义, 或 include 路径里混进了 sdk/platform/windows。"
+  #error "audio_sdk_loader.h: 这是 Windows 平台原语, 不接受其它平台编译。请检查 __ANDROID__ 宏是否被误定义, 或 include 路径里混进了 sdk_loader/platform/windows。"
 #endif
 
 #include <windows.h>     // LoadLibraryW / GetProcAddress / FreeLibrary / HMODULE

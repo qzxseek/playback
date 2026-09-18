@@ -16,7 +16,8 @@
 #include <atomic>
 #include <string>
 
-// SDK 交付的唯一接口文件: 显式加载器 AudioSdkApi(它自己会带上函数声明那张契约表)。
+// 显式加载器 AudioSdkApi —— 本程序接 SDK 的入口(它自己会带上函数声明那张契约表)。
+// 它属于接入层, 和 sdk/ 平级放在 sdk_loader/; 路径由 CMake 的 audio_sdk_loader 目标带进来。
 #include "audio_sdk_loader.h"
 
 // ---------------- 控件 / 消息 ID ----------------

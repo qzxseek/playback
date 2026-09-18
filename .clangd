@@ -15,8 +15,8 @@ CompileFlags:
     - -D_WINDOWS
     - -DAUDIO_SDK_BUILD
     - -IC:/Users/admin/Desktop/exam_sdk/sdk/include
-    # 加载器 audio_sdk_loader.h 在 platform/ 根上(不在 include 下), main_window.h 要用
-    - -IC:/Users/admin/Desktop/exam_sdk/sdk/platform
+    # 加载器 audio_sdk_loader.h 在 sdk_loader/ 下(app 层, 与 sdk/ 平级), main_window.h 要用
+    - -IC:/Users/admin/Desktop/exam_sdk/sdk_loader
     - -isystem
     - C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/VC/Tools/MSVC/14.29.30133/include
     - -isystem

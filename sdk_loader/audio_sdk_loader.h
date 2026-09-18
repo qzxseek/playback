@@ -4,6 +4,17 @@
           Load() 开库取符号, Unload() 关库, 平台差异全被下面的原语头吃掉了,
           所以调用方在两个平台上写的是同一行代码。
 
+          【本文件属于调用方, 不属于 SDK】整个 sdk_loader/ 都是接入层的东西, 摆在仓库根上
+          和 sdk/ 平级 —— 不是 SDK 的交付物。判据: sdk/src/ 与 sdk/test/ 引用本文件 0 次,
+          SDK 编库时根本不需要它; 而它却要 include SDK 的契约才能写出指针表(单向依赖),
+          且 Load() 里写死的库名 / RTLD_NOW 这些是调用方的策略。
+          显式加载只是调用方的一种可选做法 —— SDK 照样可以链导入库按名字直接调。
+
+          三份文件各管一件事:
+            sdk/include/audio_sdk/audio_c_api.h            契约 —— 24 个 AudioSdk_* 声明
+            sdk_loader/audio_sdk_loader.h                  机制 —— 指针表 + Load/Unload(本文件)
+            sdk_loader/platform/<平台>/audio_sdk_loader.h  原语 —— 开库/取符号/关库怎么写
+
           用法(Windows / Android 一字不差):
             AudioSdkApi api;
             if (!api.Load()) { 看 api.LastError(); }
@@ -20,12 +31,15 @@
 
 #include "audio_sdk/audio_c_api.h"   // 契约: 24 个 AudioSdk_* 声明(下面 decltype 要用)
 
+// 平台原语, 按宏选具体文件。路径写 "platform/xxx" 而不是裸 "xxx": 本文件就在
+// sdk_loader 根下, 引号 include 会先搜本文件所在目录 —— 写裸文件名会引到【自己】,
+// 于是 #pragma once 一挡, 平台原语一个都没进来, 后面全是"未定义"。
 #if defined(_WIN32)
-  #include "windows/audio_sdk_loader.h"
+  #include "platform/windows/audio_sdk_loader.h"
 #elif defined(__ANDROID__)
-  #include "android/audio_sdk_loader.h"
+  #include "platform/android/audio_sdk_loader.h"
 #else
-  #error "audio_sdk: 没有这个平台的显式加载器。照 sdk/platform/windows/audio_sdk_loader.h 的样子加一份 sdk/platform/<平台>/audio_sdk_loader.h, 再把平台分支加到这里, 并确认 sdk/platform 在 include 路径里。"
+  #error "audio_sdk: 没有这个平台的显式加载器。照 sdk_loader/platform/windows/audio_sdk_loader.h 的样子加一份 sdk_loader/platform/<平台>/audio_sdk_loader.h, 再把平台分支加到这里。"
 #endif
 
 #ifdef __cplusplus

@@ -7,6 +7,10 @@
             1) 导出函数声明(extern "C" 名字不修饰 + AUDIO_API 导出标记)
             2) 音频参数与状态码 —— 直接用 SDK 的 audio_types.h, 不抄第二份
 
+          本目录(sdk/include)【只放平台无关的头】, 一个 windows.h / dlfcn.h 都不碰:
+          定义侧 src/common/audio_c_api.cpp 也 include 它, 不该被平台负担拖累。
+          【怎么找到 SDK】不在这里 —— 见 sdk_loader/audio_sdk_loader.h 的 AudioSdkApi。
+
           Android 前提(编译期检查见下): API 26(8.0)及以上 —— AAudio 从 API 26 才有。
 */
 #pragma once
