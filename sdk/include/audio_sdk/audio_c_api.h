@@ -83,6 +83,8 @@ AUDIO_API void AudioSdk_RecorderPauseResume(void* handle);
 // 停止录音并落盘; 返回 AudioSdkState 的序号
 AUDIO_API int AudioSdk_RecorderStop(void* handle);
 
+AUDIO_API void AudioSdk_RecorderSetOutputPath(void* handle, const char* utf8Path);
+
 // 切换加密开关(录制中不生效)
 AUDIO_API void AudioSdk_RecorderSetAencEncrypt(void* handle);
 

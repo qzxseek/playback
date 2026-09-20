@@ -132,6 +132,12 @@ AUDIO_API int AudioSdk_RecorderStop(void* handle) {
     return static_cast<int>(AsRecorder(handle)->StopRecording());
 }
 
+// 设置录音落盘路径(UTF-8, 不含扩展名); 录制中不生效
+AUDIO_API void AudioSdk_RecorderSetOutputPath(void* handle, const char* utf8Path) {
+    if (handle && utf8Path && *utf8Path)
+        AsRecorder(handle)->SetOutputPath(utf8Path);
+}
+
 // 切换加密开关(录制中不生效)
 AUDIO_API void AudioSdk_RecorderSetAencEncrypt(void* handle) {
     if (handle) AsRecorder(handle)->SetAencEncrypt();

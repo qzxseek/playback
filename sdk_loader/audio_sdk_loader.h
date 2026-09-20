@@ -11,7 +11,7 @@
           显式加载只是调用方的一种可选做法 —— SDK 照样可以链导入库按名字直接调。
 
           三份文件各管一件事:
-            sdk/include/audio_sdk/audio_c_api.h            契约 —— 24 个 AudioSdk_* 声明
+            sdk/include/audio_sdk/audio_c_api.h            契约 —— 25 个 AudioSdk_* 声明
             sdk_loader/audio_sdk_loader.h                  机制 —— 指针表 + Load/Unload(本文件)
             sdk_loader/platform/<平台>/audio_sdk_loader.h  原语 —— 开库/取符号/关库怎么写
 
@@ -29,7 +29,7 @@
 */
 #pragma once
 
-#include "audio_sdk/audio_c_api.h"   // 契约: 24 个 AudioSdk_* 声明(下面 decltype 要用)
+#include "audio_sdk/audio_c_api.h"   // 契约: 25 个 AudioSdk_* 声明(下面 decltype 要用)
 
 // 平台原语, 按宏选具体文件。路径写 "platform/xxx" 而不是裸 "xxx": 本文件就在
 // sdk_loader 根下, 引号 include 会先搜本文件所在目录 —— 写裸文件名会引到【自己】,
@@ -85,6 +85,7 @@ struct AudioSdkApi{
     decltype(&::AudioSdk_RecorderStart)           RecorderStart           = nullptr;
     decltype(&::AudioSdk_RecorderPauseResume)     RecorderPauseResume     = nullptr;
     decltype(&::AudioSdk_RecorderStop)            RecorderStop            = nullptr;
+    decltype(&::AudioSdk_RecorderSetOutputPath)   RecorderSetOutputPath   = nullptr;
     decltype(&::AudioSdk_RecorderSetAencEncrypt)  RecorderSetAencEncrypt  = nullptr;
     decltype(&::AudioSdk_RecorderGetAencEncrypt)  RecorderGetAencEncrypt  = nullptr;
     decltype(&::AudioSdk_RecorderGetIsPaused)     RecorderGetIsPaused     = nullptr;
@@ -129,6 +130,7 @@ struct AudioSdkApi{
         AUDIO_SDK_LOAD(RecorderStart,           "AudioSdk_RecorderStart");
         AUDIO_SDK_LOAD(RecorderPauseResume,     "AudioSdk_RecorderPauseResume");
         AUDIO_SDK_LOAD(RecorderStop,            "AudioSdk_RecorderStop");
+        AUDIO_SDK_LOAD(RecorderSetOutputPath,   "AudioSdk_RecorderSetOutputPath");
         AUDIO_SDK_LOAD(RecorderSetAencEncrypt,  "AudioSdk_RecorderSetAencEncrypt");
         AUDIO_SDK_LOAD(RecorderGetAencEncrypt,  "AudioSdk_RecorderGetAencEncrypt");
         AUDIO_SDK_LOAD(RecorderGetIsPaused,     "AudioSdk_RecorderGetIsPaused");

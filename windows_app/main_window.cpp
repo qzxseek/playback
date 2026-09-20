@@ -53,6 +53,21 @@ CMainWindows::CMainWindows(){
     if (!m_recorderHandle || !m_playerHandle)
         MessageBoxW(nullptr, L"创建录音/播放对象失败(内存不足?)",
                     L"音频 SDK", MB_OK | MB_ICONERROR);
+
+    // 录音落盘路径: 显式设成 exe 目录下的 output(绝对路径)。
+    // 不设的话 SDK 用相对路径 "output", 那要由【当前工作目录】解析 —— 从别的目录启动本程序
+    // 就会落到别处(在 Android 上更是直接失败, 因为工作目录 / 不可写)。
+    // 路径【不带扩展名】, SDK 按加密开关补 .aenc / .wav。
+    if (m_recorderHandle){
+        wchar_t exePath[MAX_PATH] = {};
+        if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0){
+            std::wstring base(exePath);
+            const size_t slash = base.find_last_of(L'\\');
+            base.resize(slash == std::wstring::npos ? 0 : slash + 1);   // 砍掉 exe 文件名, 留下目录
+            base += L"output";          // 仍叫 output → 停止录音那句提示文案依然成立
+            m_api.RecorderSetOutputPath(m_recorderHandle, WideToUtf8(base).c_str());
+        }
+    }
 }
 
 CMainWindows::~CMainWindows(){

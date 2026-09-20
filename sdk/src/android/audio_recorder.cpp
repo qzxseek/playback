@@ -38,7 +38,7 @@ struct CAudioRecorder::Impl{
 
     aaudio_data_callback_result_t OnAudioReady(void* audioData, int32_t numFrames);
 
-    std::string m_outputName = "output";   // 落盘名(不含扩展名)
+    std::string m_outputPath = "output";
     // 跨线程读写: UI 线程置位, 音频线程在 OnAudioReady 里读 → 必须原子
     std::atomic<bool> m_isRecording{false};
     bool m_isPaused      = false;
@@ -112,8 +112,10 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
         return AudioSdk::AudioSdkState::DEVICE_NOT_FOUND;
     }
 
+    p->m_isRecording = true; 
     result = AAudioStream_requestStart(p->m_stream);
     if (result != AAUDIO_OK){
+        p->m_isRecording = false;    
         AAudioStream_close(p->m_stream);
         p->m_stream = nullptr;
         // 流已经开成功了, 这里再报 DEVICE_NOT_FOUND 是不实之词
@@ -122,7 +124,6 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
         return AudioSdk::AudioSdkState::PLATFORM_ERROR;
     }
 
-    p->m_isRecording = true;      // 开流成功后才置位(失败时不留下"在录"的错乱状态)
     return AudioSdk::AudioSdkState::NONE;
 }
 
@@ -167,7 +168,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
     p->m_waveAccumCount = 0;
 
     // 此刻回调已停, 不会再写 m_vecPcmData, 可直接访问——这就是"先 stop 再落盘"的原因
-    std::string outFile = p->m_outputName + (p->m_isAencEncrypt ? ".aenc" : ".wav");
+    // 后缀在这里按加密开关补上(路径本身就是 UTF-8, 格式层收的也是 UTF-8)
+    std::string outFile = p->m_outputPath + (p->m_isAencEncrypt ? ".aenc" : ".wav");
     const bool oom = p->m_oom.load(std::memory_order_relaxed);
     const AudioSdk::AudioSdkState saved =
         CWavFormat::SaveWavFile(outFile.c_str(), p->m_vecPcmData.data(),
@@ -256,6 +258,17 @@ void CAudioRecorder::SetAencEncrypt() {
     Impl* p = m_impl;
     if (p->m_isRecording.load()) return;   // 录制中不许切, 和 Windows 一致
     p->m_isAencEncrypt = !p->m_isAencEncrypt;
+}
+
+/**
+ * @brief 设置落盘路径(UTF-8, 不含扩展名 —— 后缀按加密开关补)
+ * @note 录制中不生效, 与 SetAencEncrypt 同一个道理: 这一轮的"要录到哪"应当开录前就定死。
+ *       Android 上这个接口是必需的 —— 默认的相对路径 "output" 会落在不可写的工作目录。
+ */
+void CAudioRecorder::SetOutputPath(const char* utf8Path) {
+    Impl* p = m_impl;
+    if (p->m_isRecording.load()) return;   // 录制中不生效
+    p->m_outputPath = utf8Path;
 }
 
 bool CAudioRecorder::GetAencEncrypt() const { return m_impl->m_isAencEncrypt; }

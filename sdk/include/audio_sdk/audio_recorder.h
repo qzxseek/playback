@@ -24,6 +24,8 @@ public:
     void PauseResumeRecording();                // 暂停/继续录音
     AudioSdk::AudioSdkState StopRecording();    // 停止录音并落盘(默认 .aenc)
 
+    void SetOutputPath(const char* utf8Path);
+
     void SetAencEncrypt();                      // 切换加密开关
     bool GetAencEncrypt() const;                // 当前是否加密保存
     bool GetIsPaused() const;                   // 是否暂停

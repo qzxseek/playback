@@ -22,24 +22,6 @@ constexpr size_t kBufferSize  = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8) /
 }   // namespace
 
 /**
- * @brief 宽字符路径 → UTF-8(格式层接口统一 UTF-8; 设备层管本地宽路径, 交给格式层前转换)
- * @param wide 宽字符路径
- * @return UTF-8 字符串
- */
-static std::string WideToUtf8(const std::wstring& wide)
-{
-    if (wide.empty())
-        return {};
-    const int len = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0,
-                                        nullptr, nullptr);
-    if (len <= 1)
-        return {};
-    std::string utf8(static_cast<size_t>(len) - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &utf8[0], len, nullptr, nullptr);
-    return utf8;
-}
-
-/** 
  * @brief 音频录制实现(Windows, PIMPL: winmm 全部收在 Impl 内, 不泄露到接口头)
  * @note 该类负责加载、播放、暂停、停止音频文件。
 */
@@ -59,7 +41,8 @@ struct CAudioRecorder::Impl{
    std::atomic<bool> m_oom{false};
    bool      m_isPaused    = false;      // 是否正在暂停录制
    bool      m_isAencEncrypt = true;     // 是否加密保存(默认加密)
-   std::wstring m_outputName = L"output"; // 输出文件名(不含扩展名, 默认 output)
+   
+   std::string m_outputPath = "output";
 
    // ---- 波形 ----
    // 回调指针也用原子: UI 线程注册/注销, 音频线程取快照(音频线程不能加锁)
@@ -209,13 +192,12 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
    p->m_waveCb.store(nullptr, std::memory_order_release);
    p->m_waveUser.store(nullptr, std::memory_order_relaxed);
 
-   std::wstring outFile = p->m_outputName;
-   outFile += p->m_isAencEncrypt ? L".aenc" : L".wav";
-   const std::string utf8Path = WideToUtf8(outFile);   // 宽路径 → UTF-8 再交给格式层
+   // 后缀在这里按加密开关补上; 路径本身就是 UTF-8, 格式层收的也是 UTF-8, 不用再转
+   const std::string outFile = p->m_outputPath + (p->m_isAencEncrypt ? ".aenc" : ".wav");
 
    const bool oom = p->m_oom.load(std::memory_order_relaxed);
    const AudioSdk::AudioSdkState saved =
-      CWavFormat::SaveWavFile(utf8Path.c_str(), p->m_vecRecData.data(),
+      CWavFormat::SaveWavFile(outFile.c_str(), p->m_vecRecData.data(),
                               p->m_vecRecData.size(), p->m_isAencEncrypt);
 
    if (saved != AudioSdk::AudioSdkState::NONE) return saved;
@@ -276,6 +258,17 @@ void CAudioRecorder::SetAencEncrypt() {
    Impl* p = m_impl;
    if (p->m_isRecording) return;   // 录制中不允许切换
    p->m_isAencEncrypt = !p->m_isAencEncrypt;
+}
+
+/**
+ * @brief 设置落盘路径(UTF-8, 不含扩展名 —— 后缀按加密开关补)
+ * @note 录制中不生效, 与 SetAencEncrypt 同一个道理: 这一轮的"要录到哪"应当开录前就定死。
+ *       空指针在这里不会出现(C 接口层已经挡掉), 这里只管非空串。
+ */
+void CAudioRecorder::SetOutputPath(const char* utf8Path) {
+   Impl* p = m_impl;
+   if (p->m_isRecording) return;   // 录制中不生效
+   p->m_outputPath = utf8Path;
 }
 
 bool CAudioRecorder::GetAencEncrypt() const {
