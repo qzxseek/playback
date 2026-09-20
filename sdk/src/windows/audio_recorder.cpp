@@ -6,10 +6,12 @@
 #include "audio_sdk/wav_format.h"   // SaveWavFile：录音落盘统一走它(bEncrypt=true 存加密)
 #include "audio_sdk/waveform.h"     // CWaveform::ComputePeaks(波形降采样)
 
-#include <windows.h>     
+#include <windows.h>
 #include <mmeapi.h>
 #include <winuser.h>
 #include <atomic>
+#include <new>          
+#include <stdexcept>    
 #include <string>
 
 // ---- Windows 录音缓冲参数(本文件私有) ----
@@ -45,14 +47,16 @@ struct CAudioRecorder::Impl{
    static void WaveInProc(HWAVEIN hWaveIn, UINT uMsg, DWORD_PTR dwInstanceData,
       DWORD_PTR wParam, DWORD_PTR lParam);          // 设备回调函数指针
    void OnBufferDone(WAVEHDR* hdr);                  // 缓冲区完成回调函数
+   void AbortStart();                                // 启动失败/正常停止共用的收尾
 
    HWAVEIN   m_hWaveIn   = NULL;         // 句柄
-   WAVEHDR   m_waveHdrIn[kBufferCount];  // 音频缓冲区
+   WAVEHDR   m_waveHdrIn[kBufferCount] = {};  // 音频缓冲区
    std::vector<BYTE> m_vecRecData;     // 录制数据
    // 已录字节数
    std::atomic<size_t> m_recordedBytes{0};
    // 跨线程读写: UI 线程置位, 音频线程在 OnBufferDone 里读 → 必须原子
    std::atomic<bool> m_isRecording{false};  // 是否正在录制
+   std::atomic<bool> m_oom{false};
    bool      m_isPaused    = false;      // 是否正在暂停录制
    bool      m_isAencEncrypt = true;     // 是否加密保存(默认加密)
    std::wstring m_outputName = L"output"; // 输出文件名(不含扩展名, 默认 output)
@@ -80,6 +84,23 @@ CAudioRecorder::~CAudioRecorder(){
 }
 
 /**
+ * @brief 退回已挂上的缓冲并关设备
+ * @note 启动中途失败和正常停止, 走的是同一套收尾动作
+ */
+void CAudioRecorder::Impl::AbortStart(){
+   if (m_hWaveIn == NULL) return;
+   waveInReset(m_hWaveIn);
+   for (int iN = 0; iN < kBufferCount; iN++) {
+      if (m_waveHdrIn[iN].lpData == nullptr) continue;
+      waveInUnprepareHeader(m_hWaveIn, &m_waveHdrIn[iN], sizeof(WAVEHDR));
+      delete[] m_waveHdrIn[iN].lpData;
+      m_waveHdrIn[iN].lpData = nullptr;
+   }
+   waveInClose(m_hWaveIn);
+   m_hWaveIn = NULL;
+}
+
+/**
  * @brief 开始音频录制
  * @return 音频录制状态
  */
@@ -104,21 +125,52 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
    if (res == MMSYSERR_ALLOCATED ) {
       return AudioSdk::AudioSdkState::DEVICE_BUSY;             // 设备已被占用
    }
+   if (res == MMSYSERR_NOMEM) {
+      return AudioSdk::AudioSdkState::OUT_OF_MEMORY;           // 驱动建不出内部缓冲
+   }
+   // 兜底: 上面没列到的错误以前会一路掉到函数末尾的 return NONE —— 等于谎报"开录成功"。
+   if (res != MMSYSERR_NOERROR) {
+      return AudioSdk::AudioSdkState::PLATFORM_ERROR;
+   }
 
    p->m_vecRecData.clear();     // 清空录制数据
    p->m_recordedBytes.store(0, std::memory_order_relaxed);   // 计数跟着清零
+   p->m_oom.store(false, std::memory_order_relaxed);         // 上一轮的 OOM 标记不带进这一轮
    p->m_isRecording = true;       // 标记为正在录制
 
    // 初始化缓冲区
    for (int iN = 0; iN < kBufferCount; iN++){
-      ZeroMemory(&p->m_waveHdrIn[iN], sizeof(WAVEHDR));
-      p->m_waveHdrIn[iN].lpData = new char[kBufferSize];       // 分配内存
-      p->m_waveHdrIn[iN].dwBufferLength = static_cast<DWORD>(kBufferSize);   // 设置缓冲区大小
-      waveInPrepareHeader(p->m_hWaveIn, &p->m_waveHdrIn[iN], sizeof(WAVEHDR));
-      waveInAddBuffer(p->m_hWaveIn, &p->m_waveHdrIn[iN],sizeof(WAVEHDR));
+      WAVEHDR& hdr = p->m_waveHdrIn[iN];
+      ZeroMemory(&hdr, sizeof(WAVEHDR));
+      // nothrow: 分配失败返回 NULL 而不是抛异常(BYTE 是平凡类型, 用 char 分配再按 BYTE 用)
+      hdr.lpData = new (std::nothrow) char[kBufferSize];
+      if (hdr.lpData == nullptr) {
+         p->m_isRecording = false;   // 先置位: 回滚时设备可能已经在来回调了
+         p->AbortStart();
+         return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
+      }
+      hdr.dwBufferLength = static_cast<DWORD>(kBufferSize);   // 设置缓冲区大小
 
+      // winmm 挂缓冲也要自己分配, 会失败 —— 以前两个返回值都没看
+      const MMRESULT prep = waveInPrepareHeader(p->m_hWaveIn, &hdr, sizeof(WAVEHDR));
+      const MMRESULT add  = (prep == MMSYSERR_NOERROR)
+                              ? waveInAddBuffer(p->m_hWaveIn, &hdr, sizeof(WAVEHDR))
+                              : prep;
+      if (add != MMSYSERR_NOERROR) {
+         p->m_isRecording = false;
+         p->AbortStart();
+         return (add == MMSYSERR_NOMEM) ? AudioSdk::AudioSdkState::OUT_OF_MEMORY
+                                        : AudioSdk::AudioSdkState::PLATFORM_ERROR;
+      }
    }
-   waveInStart(p->m_hWaveIn);
+
+   const MMRESULT start = waveInStart(p->m_hWaveIn);
+   if (start != MMSYSERR_NOERROR) {
+      p->m_isRecording = false;
+      p->AbortStart();
+      return (start == MMSYSERR_NOMEM) ? AudioSdk::AudioSdkState::OUT_OF_MEMORY
+                                       : AudioSdk::AudioSdkState::PLATFORM_ERROR;
+   }
    return AudioSdk::AudioSdkState::NONE;
 }
 
@@ -129,6 +181,8 @@ void CAudioRecorder::PauseResumeRecording() {
    Impl* p = m_impl;
    // 检查是否正在录制
    if (!p->m_isRecording) return;
+   // OOM 之后设备已经没排队缓冲了, resume 只会开一个空转的设备
+   if (p->m_oom) return;
    if (p->m_isPaused) {
       waveInStart(p->m_hWaveIn);
       p->m_isPaused = false;
@@ -149,15 +203,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
 
    p->m_isRecording = false;
    p->m_isPaused = false;
-   // 停止并清空所有缓冲区
-   waveInReset(p->m_hWaveIn);
-   for (int iN = 0; iN < kBufferCount; iN++) {
-      waveInUnprepareHeader(p->m_hWaveIn, &p->m_waveHdrIn[iN], sizeof(WAVEHDR));
-      delete[] p->m_waveHdrIn[iN].lpData;
-      p->m_waveHdrIn[iN].lpData = nullptr;
-   }
-   waveInClose(p->m_hWaveIn);
-   p->m_hWaveIn = NULL;
+   p->AbortStart();                // 收回缓冲 + 关设备(内部会先 reset)
 
    // 设备已彻底静默(不会再有在途回调), 此时注销波形回调是安全的
    p->m_waveCb.store(nullptr, std::memory_order_release);
@@ -166,10 +212,15 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
    std::wstring outFile = p->m_outputName;
    outFile += p->m_isAencEncrypt ? L".aenc" : L".wav";
    const std::string utf8Path = WideToUtf8(outFile);   // 宽路径 → UTF-8 再交给格式层
-   CWavFormat::SaveWavFile(utf8Path.c_str(), p->m_vecRecData.data(),
-                           p->m_vecRecData.size(), p->m_isAencEncrypt);
 
-   return AudioSdk::AudioSdkState::NONE;
+   const bool oom = p->m_oom.load(std::memory_order_relaxed);
+   const AudioSdk::AudioSdkState saved =
+      CWavFormat::SaveWavFile(utf8Path.c_str(), p->m_vecRecData.data(),
+                              p->m_vecRecData.size(), p->m_isAencEncrypt);
+
+   if (saved != AudioSdk::AudioSdkState::NONE) return saved;
+   // 落盘成功了, 但录的过程中内存不够过 —— 文件是残缺的, 得让调用方知道
+   return oom ? AudioSdk::AudioSdkState::OUT_OF_MEMORY : AudioSdk::AudioSdkState::NONE;
 }
 
 /**
@@ -202,10 +253,19 @@ void CAudioRecorder::Impl::OnBufferDone(WAVEHDR* hdr) {
    }
 
    // 复制数据到录制数据向量
-   m_vecRecData.insert(m_vecRecData.end(), reinterpret_cast<BYTE*>(hdr->lpData),
-   reinterpret_cast<BYTE*> (hdr->lpData) + hdr->dwBytesRecorded);
+   try {
+      m_vecRecData.insert(m_vecRecData.end(), reinterpret_cast<BYTE*>(hdr->lpData),
+      reinterpret_cast<BYTE*> (hdr->lpData) + hdr->dwBytesRecorded);
+   } catch (const std::bad_alloc&) {
+      m_oom.store(true, std::memory_order_relaxed);
+      return;
+   } catch (const std::length_error&) {
+      m_oom.store(true, std::memory_order_relaxed);
+      return;
+   }
    m_recordedBytes.store(m_vecRecData.size(), std::memory_order_relaxed);
-   if(m_isRecording)
+   // 续缓冲前多看一眼 m_oom: 已经内存不够了, 再采下去也只会继续失败
+   if (m_isRecording.load(std::memory_order_acquire) && !m_oom.load(std::memory_order_relaxed))
       waveInAddBuffer(m_hWaveIn, hdr, sizeof(WAVEHDR));
 }
 

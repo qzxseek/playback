@@ -10,6 +10,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <new>      // std::bad_alloc
 
 /**
  * @brief 填充 WAV 文件头
@@ -56,24 +57,30 @@ AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const char* filePath, const void
         return CEncryptedFormat::SaveAencFile(filePath, data, dataSize);
 
     // 明文: u8path 把 UTF-8 路径按平台 native 编码转换(Windows→UTF-16 流), 中文路径不乱码
-    std::ofstream file(std::filesystem::u8path(filePath), std::ios::out | std::ios::binary);
-    if (!file.is_open())
-        return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;   // 打开文件失败
+    // 这一路的分配都不大(路径转换 + 流缓冲), 但本函数本来就要返回状态码, 兜住不亏 ——
+    // 它在 StopRecording 的调用栈上, 抛出去会穿出 extern "C" 边界飞到 C/Java 调用方。
+    try {
+        std::ofstream file(std::filesystem::u8path(filePath), std::ios::out | std::ios::binary);
+        if (!file.is_open())
+            return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;   // 打开文件失败
 
-    // 写 WAV 文件头
-    WavHeader hdr;
-    CWavFormat::FillHeader(hdr, static_cast<uint32_t>(dataSize));
-    file.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
-    if (!file.good())
-        return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;   // 写入文件失败
+        // 写 WAV 文件头
+        WavHeader hdr;
+        CWavFormat::FillHeader(hdr, static_cast<uint32_t>(dataSize));
+        file.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+        if (!file.good())
+            return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;   // 写入文件失败
 
-    // 写明文 PCM 数据
-    if (dataSize > 0)
-        file.write(reinterpret_cast<const char*>(data),
-                   static_cast<std::streamsize>(dataSize));
-    if (!file.good())
-        return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;   // 写入文件失败
+        // 写明文 PCM 数据
+        if (dataSize > 0)
+            file.write(reinterpret_cast<const char*>(data),
+                       static_cast<std::streamsize>(dataSize));
+        if (!file.good())
+            return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;   // 写入文件失败
 
-    file.close();
+        file.close();
+    } catch (const std::bad_alloc&) {
+        return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
+    }
     return AudioSdk::AudioSdkState::NONE;
 }

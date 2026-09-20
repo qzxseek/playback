@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <new>      
 #include <vector>
 
 // 加密密钥
@@ -74,8 +75,14 @@ AudioSdk::AudioSdkState CEncryptedFormat::SaveAencFile(const char* filePath,cons
         return AudioSdk::AudioSdkState::INVALID_PARAMETER;
 
     // 数据段加密（XOR 等长，直接做在明文拷贝上）
-    std::vector<uint8_t> vecCipher(static_cast<const uint8_t*>(pcmData),
-                              static_cast<const uint8_t*>(pcmData) + pcmSize);
+
+    std::vector<uint8_t> vecCipher;
+    try {
+        vecCipher.assign(static_cast<const uint8_t*>(pcmData),
+                         static_cast<const uint8_t*>(pcmData) + pcmSize);
+    } catch (const std::bad_alloc&) {
+        return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
+    }
     XorCrypt(vecCipher.data(), vecCipher.size());
 
     // UTF-8 路径 → 平台 native 编码(u8path): Windows 中文不乱码, Android/Linux 直接用

@@ -397,8 +397,14 @@ void CMainWindows::AudioStartStopRec(){
         m_waveReadPos = m_waveWritePos.load(std::memory_order_acquire);
 
         // C 接口返回的是 int 状态码, 想按名字判断就转回枚举(AudioSdkState 序号两端一致)
-        if (m_api.RecorderStart(m_recorderHandle) != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
-            MessageBoxW(m_hwnd, L"打开录音设备失败", L"录音", MB_OK | MB_ICONERROR);
+        const int startSt = m_api.RecorderStart(m_recorderHandle);
+        if (startSt != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
+            // 内存不足和"设备打不开"是两回事, 提示得分开 —— 否则用户会去查设备
+            MessageBoxW(m_hwnd,
+                        (startSt == static_cast<int>(AudioSdk::AudioSdkState::OUT_OF_MEMORY))
+                            ? L"内存不足，无法开始录音"
+                            : L"打开录音设备失败",
+                        L"录音", MB_OK | MB_ICONERROR);
             return;
         }
         InvalidateWave();
@@ -415,7 +421,7 @@ void CMainWindows::AudioStartStopRec(){
     }
     else{
         // ---- 停止录音 → 落盘 ----
-        m_api.RecorderStop(m_recorderHandle);
+        const int stopSt = m_api.RecorderStop(m_recorderHandle);
         m_isRecording = false;
         m_recPaused   = false;
         UpdateRecTimeUI(0);                         // 录音时长归零
@@ -426,6 +432,16 @@ void CMainWindows::AudioStartStopRec(){
         EnableWindow(m_hBtnOpen, TRUE);
         if (!m_curFile.empty())
             EnableWindow(m_hBtnPlay_Start_Stop, TRUE);
+
+        if (stopSt == static_cast<int>(AudioSdk::AudioSdkState::OUT_OF_MEMORY)){
+            MessageBoxW(m_hwnd, L"内存不足，录音数据不完整（已保存录到的部分）",
+                        L"录音", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        if (stopSt != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
+            MessageBoxW(m_hwnd, L"录音保存失败", L"录音", MB_OK | MB_ICONERROR);
+            return;
+        }
         MessageBoxW(m_hwnd, m_api.RecorderGetAencEncrypt(m_recorderHandle)
                             ? L"录音已保存为加密 output.aenc"
                             : L"录音已保存为明文 output.wav",

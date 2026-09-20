@@ -12,6 +12,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <new>          
+#include <stdexcept>    
 #include <string>
 #include <vector>
 
@@ -45,6 +47,9 @@ struct CAudioRecorder::Impl{
     std::vector<uint8_t> m_vecPcmData;   // 只有音频线程写; 落盘在流关闭后读
     // 已录字节数
     std::atomic<size_t> m_recordedBytes{0};
+    // 同样跨线程: 音频线程分配失败时置位, StopRecording 读它决定返回什么。
+    // 含义是"录的过程中内存不够过, m_vecPcmData 里的数据是残缺的"。
+    std::atomic<bool> m_oom{false};
 
     // ---- 波形 ----
     // 回调指针用原子: UI 线程注册/注销, 音频线程取快照(音频线程不能加锁)
@@ -77,10 +82,13 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     p->m_vecPcmData.clear();
     p->m_recordedBytes.store(0, std::memory_order_relaxed);   // 计数跟着清零
     p->m_waveAccumCount = 0;      // 上一轮的残留采样不带到这一轮
+    p->m_oom.store(false, std::memory_order_relaxed);   // 上一轮的 OOM 标记不带进这一轮
     p->m_isPaused = false;
 
     AAudioStreamBuilder* builder = nullptr;
     aaudio_result_t result = AAudio_createStreamBuilder(&builder);
+    if (result == AAUDIO_ERROR_NO_MEMORY)
+        return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
     if (result != AAUDIO_OK || !builder)
         return AudioSdk::AudioSdkState::PLATFORM_ERROR;
 
@@ -98,6 +106,9 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     if (result != AAUDIO_OK){
         if (result == AAUDIO_ERROR_UNAVAILABLE)
             return AudioSdk::AudioSdkState::DEVICE_BUSY;      // 没权限 / 设备被占
+        // 开流要分配内部缓冲, 这是实际会碰到的 OOM
+        if (result == AAUDIO_ERROR_NO_MEMORY)
+            return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
         return AudioSdk::AudioSdkState::DEVICE_NOT_FOUND;
     }
 
@@ -105,7 +116,10 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     if (result != AAUDIO_OK){
         AAudioStream_close(p->m_stream);
         p->m_stream = nullptr;
-        return AudioSdk::AudioSdkState::DEVICE_NOT_FOUND;
+        // 流已经开成功了, 这里再报 DEVICE_NOT_FOUND 是不实之词
+        if (result == AAUDIO_ERROR_NO_MEMORY)
+            return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
+        return AudioSdk::AudioSdkState::PLATFORM_ERROR;
     }
 
     p->m_isRecording = true;      // 开流成功后才置位(失败时不留下"在录"的错乱状态)
@@ -118,6 +132,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
 void CAudioRecorder::PauseResumeRecording() {
     Impl* p = m_impl;
     if (!p->m_isRecording.load() || !p->m_stream) return;
+    // OOM 之后流已经被回调请求停掉了, 再 requestStart 也只会空转
+    if (p->m_oom.load()) return;
     if (p->m_isPaused) {
         AAudioStream_requestStart(p->m_stream);   // 继续采
         p->m_isPaused = false;
@@ -152,8 +168,15 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
 
     // 此刻回调已停, 不会再写 m_vecPcmData, 可直接访问——这就是"先 stop 再落盘"的原因
     std::string outFile = p->m_outputName + (p->m_isAencEncrypt ? ".aenc" : ".wav");
-    return CWavFormat::SaveWavFile(outFile.c_str(), p->m_vecPcmData.data(),
-                                   p->m_vecPcmData.size(), p->m_isAencEncrypt);
+    const bool oom = p->m_oom.load(std::memory_order_relaxed);
+    const AudioSdk::AudioSdkState saved =
+        CWavFormat::SaveWavFile(outFile.c_str(), p->m_vecPcmData.data(),
+                                p->m_vecPcmData.size(), p->m_isAencEncrypt);
+
+    // 落盘失败优先: 文件根本没写出来, 比"数据不完整"更严重
+    if (saved != AudioSdk::AudioSdkState::NONE) return saved;
+    // 落盘成功了, 但录的过程中内存不够过 —— 文件是残缺的, 得让调用方知道
+    return oom ? AudioSdk::AudioSdkState::OUT_OF_MEMORY : AudioSdk::AudioSdkState::NONE;
 }
 
 /**
@@ -206,7 +229,19 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
     }
 
     // ---- 2) 录进内存 ----
-    m_vecPcmData.insert(m_vecPcmData.end(), pcm, pcm + bytes);
+    // 【音频线程里绝不能抛异常】异常从 AAudio 的数据回调(系统 C 帧)里穿出去是未定义行为。
+    // 内存不够就认输: 记下标记并让 AAudio 停流, 已经录到的数据留着 —— m_isRecording
+    // 保持为 true, StopRecording 仍会把它落盘, 而不是把用户录的东西丢掉。
+    // vector 只会抛这两种, 不必写 catch (...) 把不相干的异常也咽掉。
+    try {
+        m_vecPcmData.insert(m_vecPcmData.end(), pcm, pcm + bytes);
+    } catch (const std::bad_alloc&) {
+        m_oom.store(true, std::memory_order_relaxed);
+        return AAUDIO_CALLBACK_RESULT_STOP;
+    } catch (const std::length_error&) {
+        m_oom.store(true, std::memory_order_relaxed);
+        return AAUDIO_CALLBACK_RESULT_STOP;
+    }
     // 插完再发布计数: 计数只会落后于 vector, 不会超前 —— 它只是"进度提示",
     // 落盘用的是 vector 自己的 size, 不以它为准。单写者用 store 比 fetch_add 便宜。
     m_recordedBytes.store(m_vecPcmData.size(), std::memory_order_relaxed);

@@ -11,9 +11,7 @@
 #include "audio_sdk/audio_recorder.h"
 #include "audio_sdk/encrypted_format.h" 
 
-#include <cstddef>      
-#include <cstdint>      
-#include <new>          
+#include <cstdint>
 
 // 句柄 <-> 指针: void* 就是 C++ 对象指针
 static inline CAudioPlayer*   AsPlayer(void* h)   { return static_cast<CAudioPlayer*>(h); }
@@ -25,7 +23,12 @@ extern "C" {
 
 // 创建播放器对象; 成功返回句柄(非空), 失败返回 NULL
 AUDIO_API void* AudioSdk_PlayerCreate(void) {
-    return new (std::nothrow) CAudioPlayer();     // 不抛异常, 失败返回 nullptr
+
+    try {
+        return new CAudioPlayer();
+    } catch (...) {
+        return nullptr;     // 调用方本来就把 NULL 当"创建失败"
+    }
 }
 
 // 销毁播放器对象(句柄可传 NULL, 安全)
@@ -97,7 +100,12 @@ AUDIO_API int AudioSdk_PlayerIsPlaying(void* handle) {
 
 // 创建录音器对象; 成功返回句柄(非空), 失败返回 NULL
 AUDIO_API void* AudioSdk_RecorderCreate(void) {
-    return new (std::nothrow) CAudioRecorder();
+    // 同 AudioSdk_PlayerCreate: nothrow 保护不到构造体内的分配
+    try {
+        return new CAudioRecorder();
+    } catch (...) {
+        return nullptr;
+    }
 }
 
 // 销毁录音器对象(句柄可传 NULL, 安全)
