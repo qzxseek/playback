@@ -56,6 +56,55 @@ static_assert(AUDIO_SDK_WAVE_BLOCK_POINTS <= WAVE_RING_POINTS,
 static_assert(REC_WAVE_POINTS <= WAVE_RING_POINTS,
               "REC_WAVE_POINTS 不能大于 WAVE_RING_POINTS");
 
+// ---------------- 布局 ----------------
+namespace Layout {
+
+// 期望的客户区尺寸
+constexpr int kClientWidth = 584;
+
+constexpr int kMargin    = 10;   // 左/上外边距(所有区域的公共起点)
+constexpr int kGap       = 6;    // 同一行控件之间的水平间隔
+constexpr int kColGap    = 4;    // 按钮列与右侧文字列之间的间隔(比按钮之间紧一点)
+constexpr int kRowHeight = 26;   // 按钮/复选框的行高
+constexpr int kBlockGap  = 14;   // 行块之间的垂直间隔
+
+// 所有区域的公共右边界: 右外边距与左边距对称, 因此绝不会越出客户区
+constexpr int kRight = kClientWidth - kMargin;
+
+// ---- 三行(从上到下) ----
+constexpr int kRecRowTop  = kMargin;                              // 录音行
+constexpr int kPlayRowTop = kRecRowTop  + kRowHeight + kGap;      // 播放行
+constexpr int kProgTop    = kPlayRowTop + kRowHeight + kBlockGap; // 进度条
+constexpr int kProgHeight = 16;
+constexpr int kWaveTop    = kProgTop + kProgHeight + kBlockGap;   // 波形区
+constexpr int kWaveHeight = 250;
+constexpr int kBottomPad  = 30;   // 波形底边到客户区底边的留白
+
+constexpr int kClientHeight = kWaveTop + kWaveHeight + kBottomPad;
+
+// ---- 录音行控件的 x(依次排开) ----
+constexpr int kBtnW      = 100;
+constexpr int kSmallBtnW = 80;
+constexpr int kRecBtnX   = kMargin;
+constexpr int kRecPauseX = kRecBtnX   + kBtnW + kGap;
+constexpr int kEncX      = kRecPauseX + kBtnW + kGap;
+
+// ---- 播放行控件的 x ----
+constexpr int kOpenX      = kMargin;
+constexpr int kPlayBtnX   = kOpenX    + kBtnW      + kGap;
+constexpr int kPlayPauseW = 90;
+constexpr int kPlayPauseX = kPlayBtnX + kSmallBtnW + kGap;
+
+// ---- 右列文字: 从按钮列右边让开一点, 一直铺到公共右边界 ----
+constexpr int kTextColX = kEncX + kSmallBtnW + kColGap;
+constexpr int kTextColW = kRight - kTextColX;
+
+// 文字比同行按钮矮一截, 在行内垂直居中
+constexpr int kLabelH     = 18;
+constexpr int kLabelInset = (kRowHeight - kLabelH) / 2;
+
+}   // namespace Layout
+
 class CMainWindows
 {
 public:

@@ -212,34 +212,44 @@ void CMainWindows::OnCreate(HWND hwnd){
 void CMainWindows::CreateControls(HWND hwnd){
     HINSTANCE hInst = GetModuleHandle(NULL);
 
-    // 录音区
+    // 录音区(坐标全部来自 Layout, 见 main_window.h)
     m_hBtnRec_Start_Stop = CreateWindowEx(0, L"BUTTON", L"开始录音",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 10, 100, 26,
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        Layout::kRecBtnX, Layout::kRecRowTop, Layout::kBtnW, Layout::kRowHeight,
         hwnd, (HMENU)(INT_PTR)BTN_RECORD_START_STOP, hInst, NULL);
     m_hBtnRecPause = CreateWindowEx(0, L"BUTTON", L"暂停录音",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 116, 10, 100, 26,
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        Layout::kRecPauseX, Layout::kRecRowTop, Layout::kBtnW, Layout::kRowHeight,
         hwnd, (HMENU)(INT_PTR)BTN_RECORD_PAUSE, hInst, NULL);
     m_hChkEnc = CreateWindowEx(0, L"BUTTON", L"加密",
-        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 222, 10, 80, 26,
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        Layout::kEncX, Layout::kRecRowTop, Layout::kSmallBtnW, Layout::kRowHeight,
         hwnd, (HMENU)(INT_PTR)BTN_ENCRYPT, hInst, NULL);
     m_hLblRecTime = CreateWindowEx(0, L"STATIC", L"录音时长: 00:00.0",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT, 306, 14, 284, 18,
+        WS_CHILD | WS_VISIBLE | SS_RIGHT,
+        Layout::kTextColX, Layout::kRecRowTop + Layout::kLabelInset,
+        Layout::kTextColW, Layout::kLabelH,
         hwnd, (HMENU)(INT_PTR)IDC_LBL_REC_TIME, hInst, NULL);
 
-    // 播放区 
+    // 播放区
     m_hBtnOpen = CreateWindowEx(0, L"BUTTON", L"打开文件",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 42, 100, 26,
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        Layout::kOpenX, Layout::kPlayRowTop, Layout::kBtnW, Layout::kRowHeight,
         hwnd, (HMENU)(INT_PTR)BTN_OPEN_FILE, hInst, NULL);
     m_hBtnPlay_Start_Stop = CreateWindowEx(0, L"BUTTON", L"播放",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 116, 42, 80, 26,
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        Layout::kPlayBtnX, Layout::kPlayRowTop, Layout::kSmallBtnW, Layout::kRowHeight,
         hwnd, (HMENU)(INT_PTR)BTN_START_STOP_PLAY, hInst, NULL);
     m_hBtnPlayPause = CreateWindowEx(0, L"BUTTON", L"暂停",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 202, 42, 90, 26,
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        Layout::kPlayPauseX, Layout::kPlayRowTop, Layout::kPlayPauseW, Layout::kRowHeight,
         hwnd, (HMENU)(INT_PTR)BTN_PLAY_PAUSE, hInst, NULL);
 
-    // 时间/状态文字(进度条右侧)
+    // 时间/状态文字(与录音时长同一列, 右对齐到公共右边界)
     m_hLblTime = CreateWindowEx(0, L"STATIC", L"00:00.0 / 00:00.0",
-        WS_CHILD | WS_VISIBLE | SS_RIGHT, 306, 44, 284, 22,
+        WS_CHILD | WS_VISIBLE | SS_RIGHT,
+        Layout::kTextColX, Layout::kPlayRowTop + Layout::kLabelInset,
+        Layout::kTextColW, Layout::kLabelH,
         hwnd, (HMENU)(INT_PTR)IDC_LBL_TIME, hInst, NULL);
 
     // 初始化还没开始录音/播放
@@ -616,7 +626,9 @@ void CMainWindows::AudioPauseResumePlay(){
  * @return RECT 进度条矩形
  */
 RECT CMainWindows::ProgressRect() const{
-    RECT rc = { 10, 82, 400, 98 };   // 左 10~400, 上 82~98(高 16 的一条轨道)
+    // 左右都对齐到公共边界: 右边界和波形区/文字列是同一条竖线
+    RECT rc = { Layout::kMargin, Layout::kProgTop,
+                Layout::kRight,  Layout::kProgTop + Layout::kProgHeight };
     return rc;
 }
 
@@ -725,7 +737,8 @@ void CMainWindows::DrawProgress(HDC hdc){
  * @return RECT 波形区矩形(在进度条下方)
  */
 RECT CMainWindows::WaveRect() const{
-    RECT rc = { 10, 110, 590, 360 };
+    RECT rc = { Layout::kMargin, Layout::kWaveTop,
+                Layout::kRight,  Layout::kWaveTop + Layout::kWaveHeight };
     return rc;
 }
 
@@ -834,7 +847,7 @@ void CMainWindows::DrawWaveform(HDC hdc){
             // 填满之后固定为整个窗口长度(之后就是滚动, 不再变长)
             const int shown = m_recWaveCount < REC_WAVE_POINTS ? m_recWaveCount : REC_WAVE_POINTS;
             // 每块 100ms 产出 AUDIO_SDK_WAVE_BLOCK_POINTS 个点 → 每点 100/256 ms
-            FormatMs(span, std::size(span), (DWORD)(shown * 100 / AUDIO_SDK_WAVE_BLOCK_POINTS));
+            FormatMs(span, std::size(span), (DWORD)(shown * AUDIO_SDK_BLOCK_MS / AUDIO_SDK_WAVE_BLOCK_POINTS));
             swprintf_s(hint, std::size(hint), L"录音中 · 显示最近 %s", span);
         }
         else{
