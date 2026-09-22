@@ -101,14 +101,15 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
             return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;
         pHdr          = &validator.Header();
         bEncrypted    = true;
-        payloadOffset = CEncryptedFormat::kAencPrefixSize + sizeof(WavHeader);   // 6+44=50
+        // 数据偏移由校验器给出: 标准排布是 44, fmt 后夹了 LIST 等子块时是真实位置
+        payloadOffset = CEncryptedFormat::kAencPrefixSize + validator.GetDataOffset();
     }
     else if (vecBuf.size() >= sizeof(WavHeader) &&
                 std::memcmp(vecBuf.data(), "RIFF", 4) == 0){
         if (!validator.Validate(vecBuf.data(), vecBuf.size()))
             return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;
         pHdr          = &validator.Header();
-        payloadOffset = sizeof(WavHeader);
+        payloadOffset = validator.GetDataOffset();
     }
     else
         return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;   // 不是认识的音频格式

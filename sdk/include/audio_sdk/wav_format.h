@@ -28,8 +28,8 @@ struct WavHeader
     uint16_t bitsPerSample;  // 位深
 
     // data 子块
-    char     dataId[4];      // "data"
-    uint32_t dataSize;       // PCM 数据长度
+    char     dataId[4];      // "data"(仅标准排布)
+    uint32_t dataSize;       // PCM 数据长度(仅标准排布)
 };
 #pragma pack(pop)
 

@@ -31,6 +31,7 @@ set(SDK_COMMON_SOURCES
     src/common/wav_format.cpp
     src/common/encrypted_format.cpp
     src/common/waveform.cpp        # 波形峰值计算(两平台共用)
+    src/common/wave_ring.cpp       # 波形环形缓冲(两平台共用, 实现自 wave_ring.h 抽出)
 )
 
 # SDK 动态库

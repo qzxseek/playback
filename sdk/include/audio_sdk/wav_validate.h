@@ -1,4 +1,4 @@
-﻿/* @Created On : 2026/8/11
+/* @Created On : 2026/8/11
    @Author : 孟源
    @note : WAV 文件校验类
 */
@@ -24,8 +24,11 @@ public:
     // 校验通过后，返回解析出的文件头（用于构建 WAVEFORMATEX 等）
     const WavHeader& Header() const { return m_header; }
 
+    size_t GetDataOffset() const { return m_dataOffset; }
+
 private:
     bool ReadHeader(const uint8_t* data, size_t size);
-    bool ValidateHeader(size_t size);
+    bool ValidateHeader(const uint8_t* data, size_t size);
     WavHeader m_header{};
+    size_t    m_dataOffset = sizeof(WavHeader);   // data 块载荷的文件偏移
 };
