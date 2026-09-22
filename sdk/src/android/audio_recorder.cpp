@@ -4,9 +4,10 @@
            仅在 Android/NDK 下编译(依赖 <aaudio/AAudio.h>, 要求 API 26+)。
            对外接口见 audio_sdk/audio_recorder.h(平台无关)。
 */
-#include "audio_sdk/audio_recorder.h"      
-#include "audio_sdk/wav_format.h"    
-#include "audio_sdk/waveform.h"      
+#include "audio_sdk/audio_recorder.h"
+#include "audio_sdk/wav_format.h"
+#include "audio_sdk/waveform.h"
+#include "audio_sdk/wave_ring.h"     // CWaveRing: 音频线程写、调用线程读的峰值环形缓冲
 
 #include <aaudio/AAudio.h>
 #include <atomic>
@@ -20,10 +21,10 @@
 // 单声道 16bit: 每帧 2 字节(回调给的 numFrames 是帧数)
 static constexpr int kBytesPerFrame = CHANNELS * (BITS_PER_SAMPLE / 8);
 
-// 波形聚合缓冲: 攒够这么多个采样才算一次峰值推给调用方。
+// 波形聚合缓冲: 攒够这么多个采样才算一次峰值、写进环形缓冲。
 // 为什么需要它: AAudio 回调比 winmm 频繁得多(块小、次数多),
-// 每来一次回调就推一遍波形会把 UI 淹掉; 攒到与 winmm 一块(同样由
-// AUDIO_SDK_BLOCK_MS 定)相当再推, 两个平台给 UI 的数据节奏就一致了。
+// 每来一次回调就推一遍波形会把调用方淹掉; 攒到与 winmm 一块(同样由
+// AUDIO_SDK_BLOCK_MS 定)相当再推, 两个平台给调用方的数据节奏就一致了。
 static constexpr size_t kAccumSamples = SAMPLE_RATE * AUDIO_SDK_BLOCK_MS / 1000;
 
 /**
@@ -52,13 +53,13 @@ struct CAudioRecorder::Impl{
     std::atomic<bool> m_oom{false};
 
     // ---- 波形 ----
-    // 回调指针用原子: UI 线程注册/注销, 音频线程取快照(音频线程不能加锁)
-    std::atomic<AudioSdkWaveCallback> m_waveCb{nullptr};
-    std::atomic<void*>                m_waveUser{nullptr};
+    // 峰值环形缓冲: 音频线程写(Push), 调用线程读(Pop)。单生产者单消费者, 无锁。
+    // 这里就是"把音频线程契约变成结构"的落点 —— 音频线程上跑的全是 SDK 代码,
+    CWaveRing m_waveRing;
     // 以下三个缓冲都预先分配 —— 音频线程里只算不分配(分配会导致爆音)
     int16_t m_waveAccum[kAccumSamples] = {};                   // 攒采样的定长缓冲
     size_t  m_waveAccumCount = 0;                              // 已攒采样数
-    float   m_waveBuf[CWaveform::kPointsPerBlock * 2] = {};    // 算好的峰值(给回调)
+    float   m_waveBuf[CWaveform::kPointsPerBlock * 2] = {};    // 算好的峰值(推给环形缓冲)
 };
 
 CAudioRecorder::CAudioRecorder() : m_impl(new Impl()) {}
@@ -82,6 +83,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     p->m_vecPcmData.clear();
     p->m_recordedBytes.store(0, std::memory_order_relaxed);   // 计数跟着清零
     p->m_waveAccumCount = 0;      // 上一轮的残留采样不带到这一轮
+    // 波形从头开始: 丢掉上一轮没取走的点(此时流还没 start, 音频线程没在跑)
+    p->m_waveRing.Reset();
     p->m_oom.store(false, std::memory_order_relaxed);   // 上一轮的 OOM 标记不带进这一轮
     p->m_isPaused = false;
 
@@ -162,10 +165,10 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
         p->m_stream = nullptr;
     }
 
-    // 流已关闭, 不会再有在途回调, 此时注销波形回调是安全的
-    p->m_waveCb.store(nullptr, std::memory_order_release);
-    p->m_waveUser.store(nullptr, std::memory_order_relaxed);
+    // 流已关闭, 音频线程不会再碰任何缓冲了
     p->m_waveAccumCount = 0;
+    // 环形缓冲里的点不清: 调用方可能还没来得及取最后一块, 留着让它在 Stop 之后
+    // 仍能取到尾巴(下一次 StartRecording 会 Reset)
 
     // 此刻回调已停, 不会再写 m_vecPcmData, 可直接访问——这就是"先 stop 再落盘"的原因
     // 后缀在这里按加密开关补上(路径本身就是 UTF-8, 格式层收的也是 UTF-8)
@@ -210,9 +213,11 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
     const size_t bytes = static_cast<size_t>(numFrames) * kBytesPerFrame;
     auto* pcm = static_cast<const uint8_t*>(audioData);
 
-    // ---- 1) 波形: 先攒够一块, 再算一次峰值推出去 ----
-    // 跑在音频线程: 只用预分配的定长缓冲, 不分配内存、不加锁
-    if (const AudioSdkWaveCallback cb = m_waveCb.load(std::memory_order_acquire)) {
+    // ---- 1) 波形: 先攒够一块, 再算一次峰值写进环形缓冲 ----
+    // 跑在音频线程: 只用预分配的定长缓冲, 不分配内存、不加锁、不调用调用方代码。
+    // (以前这里外面套了层"注册了回调才算"的条件; 现在无论调用方取不取都往环里写,
+    //  反正 Push 只是个拷贝 —— 也不用再操心注册/注销的先后。)
+    {
         const size_t room = sizeof(m_waveAccum) - m_waveAccumCount * sizeof(int16_t);
         const size_t n = bytes < room ? bytes : room;   // 极端情况装不下就只收这么多,
                                                         // 丢的是波形(主录音数据不受影响)
@@ -224,8 +229,7 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
         if (m_waveAccumCount * sizeof(int16_t) >= sizeof(m_waveAccum)) {
             CWaveform::ComputePeaks(m_waveAccum, sizeof(m_waveAccum),
                                     m_waveBuf, CWaveform::kPointsPerBlock);
-            cb(m_waveBuf, CWaveform::kPointsPerBlock,
-               m_waveUser.load(std::memory_order_relaxed));
+            m_waveRing.Push(m_waveBuf, CWaveform::kPointsPerBlock);
             m_waveAccumCount = 0;
         }
     }
@@ -274,17 +278,15 @@ void CAudioRecorder::SetOutputPath(const char* utf8Path) {
 bool CAudioRecorder::GetAencEncrypt() const { return m_impl->m_isAencEncrypt; }
 
 /**
- * @brief 注册/取消录音波形回调
- * @param cb 回调(传 NULL 取消)
- * @param userData 透传给回调的指针
- * @note 只改两个原子指针, 不加锁 —— 音频线程用"取快照"的方式读。
- *       注销后可能还有一个在途回调正在执行, 调用方要保证 userData
- *       指向的对象存活到"确定没有回调在跑"之后(通常是 StopRecording 返回后)。
+ * @brief 取走尚未读过的录音波形点(拉模式)
+ * @param outMinMax 输出缓冲, 布局 [min0,max0,min1,max1,...], 需 maxPoints*2 个 float
+ * @param maxPoints 本次最多取几个点
+ * @return 实际取到的点数; 0 = 暂无新数据(不是错误)
+ * @note 与音频线程只通过环形缓冲打交道, 不加锁。
+ *       不要与 StartRecording 并发调用 —— 开始录音会重置环形缓冲。
  */
-void CAudioRecorder::SetWaveCallback(AudioSdkWaveCallback cb, void* userData) {
-    Impl* p = m_impl;
-    p->m_waveUser.store(userData, std::memory_order_relaxed);   // 先给 userData
-    p->m_waveCb.store(cb, std::memory_order_release);           // 再发布回调
+int CAudioRecorder::ReadWave(float* outMinMax, int maxPoints) {
+    return m_impl->m_waveRing.Pop(outMinMax, maxPoints);
 }
 
 bool CAudioRecorder::GetIsPaused() const { return m_impl->m_isPaused; }

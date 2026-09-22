@@ -156,12 +156,10 @@ AUDIO_API uint32_t AudioSdk_RecorderGetRecordedMs(void* handle) {
     return handle ? AsRecorder(handle)->GetRecordedMs() : 0;
 }
 
-// 注册/取消录音波形回调(cb 传 NULL 取消)。
-// 回调跑在音频线程, 只许做"拷贝 + PostMessage", 详见 audio_types.h 的说明。
-AUDIO_API void AudioSdk_RecorderSetWaveCallback(void* handle,
-                                                AudioSdkWaveCallback cb,
-                                                void* userData) {
-    if (handle) AsRecorder(handle)->SetWaveCallback(cb, userData);
+// 取走尚未读过的录音波形点(拉模式)。句柄为空时给 0 —— 与"暂无新数据"同一个语义,
+// 调用方本来就要处理 0, 不必再为它多加一条分支
+AUDIO_API int AudioSdk_RecorderReadWave(void* handle, float* outMinMax, int maxPoints) {
+    return handle ? AsRecorder(handle)->ReadWave(outMinMax, maxPoints) : 0;
 }
 
 }

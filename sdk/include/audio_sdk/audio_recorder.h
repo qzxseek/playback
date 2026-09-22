@@ -31,13 +31,9 @@ public:
     bool GetIsPaused() const;                   // 是否暂停
     uint32_t GetRecordedMs() const;             // 已录制时长(毫秒)
 
-    // 注册/取消波形回调(录制中每积累一块就在【音频线程】回调一次)。
-    // 传 NULL 取消。回调里只许做"拷贝数据 + PostMessage"这类极快的事,
-    // 禁止分配内存/加锁/操作 UI —— 参见 AudioSdkWaveCallback 的说明。
-    //
-    // 【重要】StopRecording() 会把这个回调清掉(那时设备已静默, 清是安全的)。
-    // 所以每次开始录音都要重新注册 —— 不能只注册一次就指望一直有效。
-    void SetWaveCallback(AudioSdkWaveCallback cb, void* userData);
+    // 取走尚未读过的录音波形点(拉模式, 语义见 AudioSdk_RecorderReadWave)。
+    // 任意线程可调, 但不要与 StartRecording 并发 —— 那会重置内部环形缓冲。
+    int ReadWave(float* outMinMax, int maxPoints);
 
 private:
     struct Impl;                    // 前向声明, 实现细节(winmm/AAudio)全在 .cpp

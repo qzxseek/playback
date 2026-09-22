@@ -92,12 +92,8 @@ AUDIO_API int      AudioSdk_RecorderGetAencEncrypt(void* handle);    // 1=加密
 AUDIO_API int      AudioSdk_RecorderGetIsPaused(void* handle);       // 1=已暂停
 AUDIO_API uint32_t AudioSdk_RecorderGetRecordedMs(void* handle);     // 已录时长(毫秒)
 
-// 注册/取消录音波形回调(cb 传 NULL 取消), 录制中每积累一块就回调一次。
-// 回调跑在【音频线程】: 只许做"拷贝数据 + PostMessage", 禁止分配内存/加锁/操作 UI。
-// 停止录音前建议先传 NULL 取消注册。
-AUDIO_API void AudioSdk_RecorderSetWaveCallback(void* handle,
-                                                AudioSdkWaveCallback cb,
-                                                void* userData);
+// 取走尚未读过的录音波形点(拉模式)
+AUDIO_API int AudioSdk_RecorderReadWave(void* handle, float* outMinMax, int maxPoints);
 
 AUDIO_API int AudioSdk_IsAencFile(const char* utf8Path);   // 1=加密, 0=否
 

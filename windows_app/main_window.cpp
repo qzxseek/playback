@@ -79,7 +79,7 @@ CMainWindows::~CMainWindows(){
     }
     // 先销毁 dll 里的对象, 再卸 dll —— 顺序反了就是往已卸载的代码里跳
     if (m_api.hModule){
-        m_api.RecorderSetWaveCallback(m_recorderHandle, nullptr, nullptr);
+        // 波形改拉模式后, 录音器不再持有调用方的函数指针, 销毁它不会回调进本对象
         m_api.RecorderDestroy(m_recorderHandle);
         m_api.PlayerDestroy(m_playerHandle);
         m_recorderHandle = nullptr;
@@ -102,37 +102,6 @@ static void FormatMs(wchar_t* out, size_t cch, DWORD ms){
 }
 
 /**
- * @brief 录音波形回调 —— 跑在【音频线程】!
- * @param minmax 峰值对 [min0,max0,min1,max1,...], 已归一化到 [-1,1]
- * @param points 点数
- * @param userData 注册时传进来的 this
- */
-void CMainWindows::OnWaveFromAudio(const float* minmax, int points, void* userData){
-    if (!minmax || points <= 0) return;
-    auto* self = static_cast<CMainWindows*>(userData);
-    if (!self) return;
-
-    // 防御: 环形缓冲只有 WAVE_RING_POINTS 格, 一次推来的点数不能超过它,
-    // 否则后面的点会绕回去盖掉前面的(下标被取模保护, 不会越界, 但数据是乱的)。
-    // 当前契约是每块 256 点、环形 4096 格, 所以正常永远走不到这个分支;
-    // 这里是把不变量写出来 —— 万一有人改了 AUDIO_SDK_WAVE_BLOCK_POINTS 也不出事。
-    if (points > WAVE_RING_POINTS) points = WAVE_RING_POINTS;
-
-    // 写环形缓冲: 生产者只动 m_waveWritePos, 消费者只动 m_waveReadPos
-    int iWrite = self->m_waveWritePos.load(std::memory_order_relaxed);
-    for (int i = 0; i < points; ++i){
-        self->m_waveRing[iWrite][0] = minmax[i * 2];        // min
-        self->m_waveRing[iWrite][1] = minmax[i * 2 + 1];    // max
-        iWrite = (iWrite + 1) % WAVE_RING_POINTS;                // 满了就绕回, 覆盖最老的
-    }
-    // release: 保证上面的写入对取到该值的消费者可见
-    self->m_waveWritePos.store(iWrite, std::memory_order_release);
-
-    // 通知 UI 线程来取。用 Post(异步)不用 Send —— Send 会阻塞音频线程等 UI 处理完
-    ::PostMessageW(self->m_hwnd, WM_WAVE_DATA, 0, 0);
-}
-
-/**
  * @brief 文件波形回调 —— 在【调用线程】(这里是 UI 线程)同步执行, 无并发
  * @param minmax 峰值对
  * @param points 点数
@@ -152,34 +121,27 @@ void CMainWindows::OnWaveFromFile(const float* minmax, int points, void* userDat
 }
 
 /**
- * @brief UI 线程: 把环形缓冲里尚未消费的点并进录音滚动窗口
- * @note 只有 UI 线程调用, 所以 m_waveReadPos / m_recWave 不需要同步
+ * @brief 把一批峰值点接到滚动窗口末尾, 窗口装不下就从最老的开始挤出去
+ * @param minmax 峰值对 [min0,max0,min1,max1,...](布局同回调参数)
+ * @param points 点数
+ * @note 只有 UI 线程调用, 所以 m_recWave / m_recWaveCount 不需要同步
  */
-void CMainWindows::ConsumeWaveRing(){
-    const int iWrite = m_waveWritePos.load(std::memory_order_acquire);
+void CMainWindows::AppendToRecWave(const float* minmax, int points){
+    if (!minmax || points <= 0) return;
 
-    // 本次能取到多少个点(环形, 可能绕了一圈)
-    int avail = iWrite - m_waveReadPos;
-    if (avail < 0) avail += WAVE_RING_POINTS;
-    if (avail == 0) return;
-
-    // 生产得太快、把环形挤满时, 只取最新的 REC_WAVE_POINTS 个(丢掉更老的)
-    if (avail > REC_WAVE_POINTS){
-        m_waveReadPos = (iWrite - REC_WAVE_POINTS + WAVE_RING_POINTS) % WAVE_RING_POINTS;
-        avail = REC_WAVE_POINTS;
+    // 一次来的点比整个窗口还多: 只留最后 REC_WAVE_POINTS 个
+    if (points >= REC_WAVE_POINTS){
+        std::memcpy(m_recWave, minmax + (points - REC_WAVE_POINTS) * 2,
+                    sizeof(float) * REC_WAVE_POINTS * 2);
+        m_recWaveCount = REC_WAVE_POINTS;
+        return;
     }
 
     // 窗口放不下的老点先丢掉: 一次 memmove 把保留的部分挪到开头。
     // 这样比"每来一个点就挪一格"省掉大量重复拷贝。
-    const int iTotal = m_recWaveCount + avail;
-    if (iTotal > REC_WAVE_POINTS){
-        int drop = iTotal - REC_WAVE_POINTS;
-        // 保证 drop 不超出已有数据, 下面 keep 才是非负的。
-        // (由上面 avail <= REC_WAVE_POINTS 和 m_recWaveCount <= REC_WAVE_POINTS
-        //  已经能推出 drop <= m_recWaveCount, 这里写成显式钳制, 免得依赖那个推导)
-        if (drop > m_recWaveCount) drop = m_recWaveCount;
-
-        const int iKeep = m_recWaveCount - drop;
+    if (m_recWaveCount + points > REC_WAVE_POINTS){
+        const int drop = m_recWaveCount + points - REC_WAVE_POINTS;
+        const int iKeep = m_recWaveCount - drop;      // drop <= m_recWaveCount, 恒非负
         if (iKeep > 0)
             std::memmove(m_recWave, m_recWave + drop,
                          sizeof(m_recWave[0]) * static_cast<size_t>(iKeep));
@@ -187,12 +149,28 @@ void CMainWindows::ConsumeWaveRing(){
     }
 
     // 新点接到末尾
-    for (int i = 0; i < avail; ++i){
-        m_recWave[m_recWaveCount][0] = m_waveRing[m_waveReadPos][0];
-        m_recWave[m_recWaveCount][1] = m_waveRing[m_waveReadPos][1];
-        ++m_recWaveCount;
-        m_waveReadPos = (m_waveReadPos + 1) % WAVE_RING_POINTS;
+    std::memcpy(m_recWave[m_recWaveCount], minmax, sizeof(float) * points * 2);
+    m_recWaveCount += points;
+}
+
+/**
+ * @brief 把 SDK 环里攒着的波形点全取出来, 接进 UI 侧的滚动窗口(拉模式)
+ * @return 本次是否取到了新点
+ * @note 只有 UI 线程调用(定时器里)。
+ *       循环取到 0 为止: SDK 那边可能攒了不止一块(UI 卡一下就会这样),
+ *       一次只拉一块会让显示越落越远, 所以每次拉干。
+ */
+bool CMainWindows::ConsumeWaveRing(){
+    if (!SdkReady() || !m_recorderHandle) return false;
+    bool got = false;
+    for (;;){
+        const int n = m_api.RecorderReadWave(m_recorderHandle, m_wavePull,
+                                             AUDIO_SDK_WAVE_BLOCK_POINTS);
+        if (n <= 0) break;              // 0 = 暂无新数据, 不是错误
+        AppendToRecWave(m_wavePull, n);
+        got = true;
     }
+    return got;
 }
 
 /**
@@ -310,11 +288,6 @@ LRESULT CMainWindows::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 OnTimerTick();
             return 0;
 
-        case WM_WAVE_DATA:                   // 音频线程推来了新波形, 在这里(UI 线程)取走
-            ConsumeWaveRing();
-            InvalidateWave();
-            return 0;
-
         case WM_LBUTTONDOWN:                 // 进度条上按下: 进入"预览拖动"
             if (m_isPlaying){
                 int cx = (short)LOWORD(lParam);          // 客户区 x
@@ -410,16 +383,11 @@ void CMainWindows::AudioStartStopRec(){
     if (!SdkReady()) return;
     if (!m_isRecording){
         // ---- 开始录音 ----
-        // 先注册波形回调, 再开设备 —— 反过来的话第一块(100ms)的数据会漏掉。
-        // 必须"每次开始录音都注册": SDK 在 StopRecording 里会清掉回调
-        // (那时设备已静默, 清是安全的), 若只在窗口创建时注册一次,
-        // 第二次录音起就再也收不到波形了。
-        m_api.RecorderSetWaveCallback(m_recorderHandle, &CMainWindows::OnWaveFromAudio, this);
-
-        // 波形从头开始: 丢掉上一轮的滚动窗口, 并把环形缓冲的读游标追到写游标
-        // (否则新一轮录音会接着上一次的波形往后画)
+        // 波形这边不用注册任何回调(拉模式): RecorderStart 会把 SDK 那边的波形环
+        // 清空, 之后每 100ms 由定时器 ConsumeWaveRing 去拉一次。
+        //
+        // 波形从头开始: 丢掉上一轮的滚动窗口(否则新一轮会接着上一次的波形往后画)
         m_recWaveCount = 0;
-        m_waveReadPos = m_waveWritePos.load(std::memory_order_acquire);
 
         // C 接口返回的是 int 状态码, 想按名字判断就转回枚举(AudioSdkState 序号两端一致)
         const int startSt = m_api.RecorderStart(m_recorderHandle);
@@ -447,6 +415,9 @@ void CMainWindows::AudioStartStopRec(){
     else{
         // ---- 停止录音 → 落盘 ----
         const int stopSt = m_api.RecorderStop(m_recorderHandle);
+        // 设备停了, 但 SDK 的波形环里还留着最后一批点 —— 再拉一次, 把收尾那一块
+        // 也画上(下一次 RecorderStart 会清空它, 这里是最后机会)
+        if (ConsumeWaveRing()) InvalidateWave();
         m_isRecording = false;
         m_recPaused   = false;
         UpdateRecTimeUI(0);                         // 录音时长归零
@@ -666,6 +637,8 @@ void CMainWindows::OnTimerTick(){
     if (m_isRecording){
         // 已录时长同样问 SDK 要毫秒, UI 不自己按采样率算
         UpdateRecTimeUI(m_api.RecorderGetRecordedMs(m_recorderHandle));
+        // 波形: 音频线程只往 SDK 自己的环里写, 这里(UI 线程)每 100ms 拉一次
+        if (ConsumeWaveRing()) InvalidateWave();
     }
 
     if (!m_isPlaying) return;                     // 没在播就不刷
