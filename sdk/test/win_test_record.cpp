@@ -124,8 +124,9 @@ int main(int argc, char* argv[])
                     recordedMs, expectMs);
         return 1;
     }
-    // 至少 100ms 才算真正采到了声音。100ms 是录音回调的块大小
-    const size_t oneBlockBytes = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8) / 10;
+    // 至少一个完整块才算真正采到了声音。块长由 AUDIO_SDK_BLOCK_MS 定
+    const size_t oneBlockBytes =
+        SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8) * AUDIO_SDK_BLOCK_MS / 1000;
     if (pcmBytes < oneBlockBytes)
     {
         std::printf("[error] too little data captured, check mic\n");

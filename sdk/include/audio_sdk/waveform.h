@@ -17,9 +17,10 @@
 class CWaveform
 {
 public:
-    // 录音: 每块(100ms)输出的峰值点数。
-    // 一块 4410 个采样降到 256 点, 约每 17 个采样一个点, 够画出细节。
-    // 数值定义在 audio_types.h —— 调用方要按它开接收缓冲, 属于接口契约。
+    // 录音: 每块(时长见 AUDIO_SDK_BLOCK_MS)输出的峰值点数。
+    // 按默认 100ms 一块算, 4410 个采样降到 256 点, 约每 17 个采样一个点, 够画出细节。
+    // 数值不随块时长变(变的是回调频率, 不是每次给的点数); 定义在 audio_types.h
+    // —— 调用方要按它开接收缓冲, 属于接口契约。
     static constexpr int kPointsPerBlock = AUDIO_SDK_WAVE_BLOCK_POINTS;
 
     // 播放: 整个文件的峰值点数。UI 宽度约 900px, 1024 点足够铺满。

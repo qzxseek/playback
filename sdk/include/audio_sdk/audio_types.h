@@ -13,8 +13,13 @@
 #define BITS_PER_SAMPLE 16
 #define CHANNELS        1
 
+// 录音分块时长(毫秒)
+//   Windows —— 按它算 winmm 缓冲块的字节数
+//   Android —— 按它攒够采样再推一次波形回调(节奏与 Windows 对齐)
+#define AUDIO_SDK_BLOCK_MS           100
 
-#define AUDIO_SDK_WAVE_BLOCK_POINTS  256              // 每块(100ms)回调一次, 每次给这么多个点
+
+#define AUDIO_SDK_WAVE_BLOCK_POINTS  256              // 每块(AUDIO_SDK_BLOCK_MS 的时长)回调一次, 每次给这么多个点
 #define AUDIO_SDK_WAVE_FILE_POINTS   1024             // 整个文件的波形, 一次给这么多个点
 
 // 波形回调: 把降采样后的峰值对交给调用方画波形

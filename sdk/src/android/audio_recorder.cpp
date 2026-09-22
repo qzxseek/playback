@@ -22,9 +22,9 @@ static constexpr int kBytesPerFrame = CHANNELS * (BITS_PER_SAMPLE / 8);
 
 // 波形聚合缓冲: 攒够这么多个采样才算一次峰值推给调用方。
 // 为什么需要它: AAudio 回调比 winmm 频繁得多(块小、次数多),
-// 每来一次回调就推一遍波形会把 UI 淹掉; 攒到与 winmm 一块(100ms)相当再推,
-// 两个平台给 UI 的数据节奏就一致了。
-static constexpr size_t kAccumSamples = SAMPLE_RATE / 10;   // 100ms 的采样数
+// 每来一次回调就推一遍波形会把 UI 淹掉; 攒到与 winmm 一块(同样由
+// AUDIO_SDK_BLOCK_MS 定)相当再推, 两个平台给 UI 的数据节奏就一致了。
+static constexpr size_t kAccumSamples = SAMPLE_RATE * AUDIO_SDK_BLOCK_MS / 1000;
 
 /**
  * @brief 音频录制实现(Android, PIMPL: AAudio 全部收在 Impl 内, 不泄露到接口头)

@@ -17,8 +17,13 @@
 // ---- Windows 录音缓冲参数(本文件私有) ----
 namespace {
 constexpr int kBufferCount = 4;   // 环形缓冲块数: 一块在录, 其余在排队/回调, 避免丢数据
-// 每块 100ms
-constexpr size_t kBufferSize  = SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8) / 10;
+// 每块 AUDIO_SDK_BLOCK_MS 毫秒的字节数(先乘后除: 这里的取值都能整除, 无截断)
+constexpr size_t kBufferSize =
+   SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8) * AUDIO_SDK_BLOCK_MS / 1000;
+// 块长必须是整帧的倍数, 否则一个 16bit 采样会被切在相邻两块里 —— 录出来是坏音频。
+// 把"改时长"这件事的错值挡在编译期, 而不是等到录完一段才发现声音不对。
+static_assert(kBufferSize % (CHANNELS * (BITS_PER_SAMPLE / 8)) == 0,
+              "AUDIO_SDK_BLOCK_MS 算出的块长不是整帧, 请取能整除的时长");
 }   // namespace
 
 /**
