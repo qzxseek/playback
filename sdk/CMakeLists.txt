@@ -78,6 +78,17 @@ if(WIN32)
     # 同上: 静态编译 SDK 源码, 不要 dllimport/dllexport
     target_compile_definitions(test_win_play PRIVATE AUDIO_SDK_STATIC)
     target_link_libraries(test_win_play PRIVATE winmm)
+
+    # 格式层单测：不碰设备不碰线程, 只链格式层三个 .cpp, 秒级可反复跑
+    add_executable(test_format_unit
+        test/format_unit.cpp
+        src/common/wav_validate.cpp
+        ${SDK_COMMON_SOURCES}
+    )
+    target_include_directories(test_format_unit PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_compile_definitions(test_format_unit PRIVATE AUDIO_SDK_STATIC)
 endif()
 
 # 发布: 把 dll 拷到 windows_app/resource, 供 UI 工程(独立 CMake 工程, 显式加载)取用

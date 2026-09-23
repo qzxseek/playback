@@ -52,6 +52,10 @@ void CWavFormat::FillHeader(WavHeader& hdr, uint32_t dataSize,uint32_t sampleRat
 */
 AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const char* filePath, const void* data,
     size_t dataSize,bool bEncrypt){
+    // 路径为NULL
+    if (!filePath)
+        return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
+
     // 加密
     if (bEncrypt)
         return CEncryptedFormat::SaveAencFile(filePath, data, dataSize);

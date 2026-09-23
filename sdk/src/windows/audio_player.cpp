@@ -161,8 +161,11 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    else
       return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;             // 不是认识的音频格式
 
-   // 数据区：明文直接取；加密容器整段 XOR 解回明文（XOR 等长，长度不变）
-   p->m_vecPcm.assign(vecBuf.begin() + payloadOffset, vecBuf.end());
+   // 数据区：明文直接取；加密容器整段 XOR 解回明文（XOR 等长，长度不变）。
+   // 按 data 块的真实偏移+长度取 —— data 后面可以再垫 LIST/ID3 等尾块,
+   // 直接顶到文件末尾会把尾块字节当 PCM 播出去(结尾杂音 + 时长虚涨)。
+   p->m_vecPcm.assign(vecBuf.begin() + payloadOffset,
+                      vecBuf.begin() + payloadOffset + validator.GetDataSize());
    if (bEncrypted)
       CEncryptedFormat::XorCrypt(p->m_vecPcm.data(), p->m_vecPcm.size());
 

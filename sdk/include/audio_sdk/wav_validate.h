@@ -26,9 +26,14 @@ public:
 
     size_t GetDataOffset() const { return m_dataOffset; }
 
+    // data 块载荷长度(校验通过后有效)。data 不一定是文件最后一块 ——
+    // 后面可以再垫 LIST/ID3 等尾块, 所以长度不能拿"文件总长 - 偏移"算, 必须以这里为准。
+    size_t GetDataSize() const { return m_dataSize; }
+
 private:
     bool ReadHeader(const uint8_t* data, size_t size);
     bool ValidateHeader(const uint8_t* data, size_t size);
     WavHeader m_header{};
     size_t    m_dataOffset = sizeof(WavHeader);   // data 块载荷的文件偏移
+    size_t    m_dataSize   = 0;                   // data 块载荷长度
 };
