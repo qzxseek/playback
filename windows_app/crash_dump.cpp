@@ -58,8 +58,8 @@ void WriteDump(EXCEPTION_POINTERS* info) {
 /**
  * @brief 处理不了的异常
  * @note 管两类:
- *         · 空指针 / 除零 / 栈溢出这类 SEH
- *         · "throw 出去没人接"的 C++ 异常 —— MSVC 会先把它转成一个 SEH 异常
+ *         空指针 / 除零 / 栈溢出这类 SEH
+ *         "throw 出去没人接"的 C++ 异常 —— MSVC 会先把它转成一个 SEH 异常
  *           (码 0xE06D7363), 所以也会走到这里
  */
 LONG WINAPI OnCrash(EXCEPTION_POINTERS* info) {
@@ -81,9 +81,7 @@ void OnTerminate() {
 }   // namespace
 
 void InstallCrashHandler() {
-    // 转储写到 exe 旁边(双击运行时最直观)。
-    // 注意: exe 装在 Program Files 之类不可写的目录时, CreateFileW 会失败、
-    //       就不生成 dmp —— 那种情况需要改成写 %LOCALAPPDATA%
+    
     ::GetModuleFileNameW(nullptr, g_dir, MAX_PATH);
     if (wchar_t* slash = ::wcsrchr(g_dir, L'\\'))
         *slash = L'\0';

@@ -1,31 +1,6 @@
 /* @Created On : 2026/9/18
    @Author : 孟源
-   @note : 显式加载器 AudioSdkApi —— "怎么找到 SDK"。
-          Load() 开库取符号, Unload() 关库, 平台差异全被下面的原语头吃掉了,
-          所以调用方在两个平台上写的是同一行代码。
-
-          【本文件属于调用方, 不属于 SDK】整个 sdk_loader/ 都是接入层的东西, 摆在仓库根上
-          和 sdk/ 平级 —— 不是 SDK 的交付物。判据: sdk/src/ 与 sdk/test/ 引用本文件 0 次,
-          SDK 编库时根本不需要它; 而它却要 include SDK 的契约才能写出指针表(单向依赖),
-          且 Load() 里写死的库名 / RTLD_NOW 这些是调用方的策略。
-          显式加载只是调用方的一种可选做法 —— SDK 照样可以链导入库按名字直接调。
-
-          三份文件各管一件事:
-            sdk/include/audio_sdk/audio_c_api.h            契约 —— 25 个 AudioSdk_* 声明
-            sdk_loader/audio_sdk_loader.h                  机制 —— 指针表 + Load/Unload(本文件)
-            sdk_loader/platform/<平台>/audio_sdk_loader.h  原语 —— 开库/取符号/关库怎么写
-
-          用法(Windows / Android 一字不差):
-            AudioSdkApi api;
-            if (!api.Load()) { 看 api.LastError(); }
-            void* player = api.PlayerCreate();
-            api.PlayerPlayFile(player, "test.wav");
-            api.PlayerDestroy(player);
-            api.Unload();          // 调用前必须先销毁全部 handle, 否则析构会跳进已卸载的代码
-
-          Android 侧的前提: ① API 26(8.0)及以上 —— AAudio 从 API 26 才有;
-                            ② SDK 要单独编成 libaudio_sdk.so 随 APK 装进 jniLibs;
-                            ③ 桥自己的 .so 不要链它。
+   @note : 显式加载器 AudioSdkApi
 */
 #pragma once
 
@@ -100,46 +75,46 @@ struct AudioSdkApi{
      * @return 全部符号都取到返回 true; 任一缺失返回 false 并整体回滚
      */
     bool Load(AudioSdkModuleName moduleName = AUDIO_SDK_MODULE_NAME){
-        if (hModule) return true;                     // 已经加载过
-        AUDIO_SDK_OPEN(hModule, moduleName);
-        if (hModule == nullptr) {
-            AudioSdkFormatOpenError(m_lastError, sizeof(m_lastError), moduleName);
-            return false;
-        }
+      if (hModule) return true;                     // 已经加载过
+      AUDIO_SDK_OPEN(hModule, moduleName);
+      if (hModule == nullptr) {
+          AudioSdkFormatOpenError(m_lastError, sizeof(m_lastError), moduleName);
+          return false;
+      }
 
-        bool bOk = true;
+      bool bOk = true;
 
-        // 播放器
-        AUDIO_SDK_LOAD(PlayerCreate,        "AudioSdk_PlayerCreate");
-        AUDIO_SDK_LOAD(PlayerDestroy,       "AudioSdk_PlayerDestroy");
-        AUDIO_SDK_LOAD(PlayerPlayFile,      "AudioSdk_PlayerPlayFile");
-        AUDIO_SDK_LOAD(PlayerPausePlay,     "AudioSdk_PlayerPausePlay");
-        AUDIO_SDK_LOAD(PlayerResumePlay,    "AudioSdk_PlayerResumePlay");
-        AUDIO_SDK_LOAD(PlayerStopPlay,      "AudioSdk_PlayerStopPlay");
-        AUDIO_SDK_LOAD(PlayerSeek,          "AudioSdk_PlayerSeek");
-        AUDIO_SDK_LOAD(PlayerGetPlayPos,    "AudioSdk_PlayerGetPlayPos");
-        AUDIO_SDK_LOAD(PlayerGetTotalPos,   "AudioSdk_PlayerGetTotalPos");
-        AUDIO_SDK_LOAD(PlayerIsPlaying,     "AudioSdk_PlayerIsPlaying");
-        AUDIO_SDK_LOAD(PlayerGetPlayPosMs,  "AudioSdk_PlayerGetPlayPosMs");
-        AUDIO_SDK_LOAD(PlayerGetTotalPosMs, "AudioSdk_PlayerGetTotalPosMs");
-        AUDIO_SDK_LOAD(PlayerBuildWaveform, "AudioSdk_PlayerBuildWaveform");
+      // 播放器
+      AUDIO_SDK_LOAD(PlayerCreate,        "AudioSdk_PlayerCreate");
+      AUDIO_SDK_LOAD(PlayerDestroy,       "AudioSdk_PlayerDestroy");
+      AUDIO_SDK_LOAD(PlayerPlayFile,      "AudioSdk_PlayerPlayFile");
+      AUDIO_SDK_LOAD(PlayerPausePlay,     "AudioSdk_PlayerPausePlay");
+      AUDIO_SDK_LOAD(PlayerResumePlay,    "AudioSdk_PlayerResumePlay");
+      AUDIO_SDK_LOAD(PlayerStopPlay,      "AudioSdk_PlayerStopPlay");
+      AUDIO_SDK_LOAD(PlayerSeek,          "AudioSdk_PlayerSeek");
+      AUDIO_SDK_LOAD(PlayerGetPlayPos,    "AudioSdk_PlayerGetPlayPos");
+      AUDIO_SDK_LOAD(PlayerGetTotalPos,   "AudioSdk_PlayerGetTotalPos");
+      AUDIO_SDK_LOAD(PlayerIsPlaying,     "AudioSdk_PlayerIsPlaying");
+      AUDIO_SDK_LOAD(PlayerGetPlayPosMs,  "AudioSdk_PlayerGetPlayPosMs");
+      AUDIO_SDK_LOAD(PlayerGetTotalPosMs, "AudioSdk_PlayerGetTotalPosMs");
+      AUDIO_SDK_LOAD(PlayerBuildWaveform, "AudioSdk_PlayerBuildWaveform");
 
-        // 录音器
-        AUDIO_SDK_LOAD(RecorderCreate,          "AudioSdk_RecorderCreate");
-        AUDIO_SDK_LOAD(RecorderDestroy,         "AudioSdk_RecorderDestroy");
-        AUDIO_SDK_LOAD(RecorderStart,           "AudioSdk_RecorderStart");
-        AUDIO_SDK_LOAD(RecorderPauseResume,     "AudioSdk_RecorderPauseResume");
-        AUDIO_SDK_LOAD(RecorderStop,            "AudioSdk_RecorderStop");
-        AUDIO_SDK_LOAD(RecorderSetOutputPath,   "AudioSdk_RecorderSetOutputPath");
-        AUDIO_SDK_LOAD(RecorderSetAencEncrypt,  "AudioSdk_RecorderSetAencEncrypt");
-        AUDIO_SDK_LOAD(RecorderGetAencEncrypt,  "AudioSdk_RecorderGetAencEncrypt");
-        AUDIO_SDK_LOAD(RecorderGetIsPaused,     "AudioSdk_RecorderGetIsPaused");
-        AUDIO_SDK_LOAD(RecorderGetRecordedMs,   "AudioSdk_RecorderGetRecordedMs");
-        AUDIO_SDK_LOAD(RecorderReadWave,        "AudioSdk_RecorderReadWave");
-        AUDIO_SDK_LOAD(IsAencFile,              "AudioSdk_IsAencFile");
+      // 录音器
+      AUDIO_SDK_LOAD(RecorderCreate,          "AudioSdk_RecorderCreate");
+      AUDIO_SDK_LOAD(RecorderDestroy,         "AudioSdk_RecorderDestroy");
+      AUDIO_SDK_LOAD(RecorderStart,           "AudioSdk_RecorderStart");
+      AUDIO_SDK_LOAD(RecorderPauseResume,     "AudioSdk_RecorderPauseResume");
+      AUDIO_SDK_LOAD(RecorderStop,            "AudioSdk_RecorderStop");
+      AUDIO_SDK_LOAD(RecorderSetOutputPath,   "AudioSdk_RecorderSetOutputPath");
+      AUDIO_SDK_LOAD(RecorderSetAencEncrypt,  "AudioSdk_RecorderSetAencEncrypt");
+      AUDIO_SDK_LOAD(RecorderGetAencEncrypt,  "AudioSdk_RecorderGetAencEncrypt");
+      AUDIO_SDK_LOAD(RecorderGetIsPaused,     "AudioSdk_RecorderGetIsPaused");
+      AUDIO_SDK_LOAD(RecorderGetRecordedMs,   "AudioSdk_RecorderGetRecordedMs");
+      AUDIO_SDK_LOAD(RecorderReadWave,        "AudioSdk_RecorderReadWave");
+      AUDIO_SDK_LOAD(IsAencFile,              "AudioSdk_IsAencFile");
 
-        if (!bOk) { Unload(); return false; }          // 缺符号就整体回滚, 别留半套指针
-        return true;
+      if (!bOk) { Unload(); return false; }          // 缺符号就整体回滚, 别留半套指针
+      return true;
     }
 
     /// 卸载动态库(调用前先销毁由它创建的对象, 否则析构会跳进已卸载的代码)

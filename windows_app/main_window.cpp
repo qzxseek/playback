@@ -40,24 +40,19 @@ static std::wstring Utf8ToWide(const char* utf8)
 }
 
 CMainWindows::CMainWindows(){
-    // 显式加载: 只要一个 .dll, 不要导入库(.lib); 换编译器/版本也不受 C++ ABI 影响
+    // 显式加载
     if (!m_api.Load()){
         MessageBoxW(nullptr, Utf8ToWide(m_api.LastError()).c_str(),
                     L"加载 audio_sdk.dll 失败", MB_OK | MB_ICONERROR);
         return;                       // 句柄保持 nullptr; CreateControls 里会把音频按钮禁掉
     }
 
-    // 只创建一次, 全程复用(对象里存着设备/缓冲状态, 不能每次操作都新建)
     m_recorderHandle = m_api.RecorderCreate();
     m_playerHandle   = m_api.PlayerCreate();
     if (!m_recorderHandle || !m_playerHandle)
         MessageBoxW(nullptr, L"创建录音/播放对象失败(内存不足?)",
                     L"音频 SDK", MB_OK | MB_ICONERROR);
 
-    // 录音落盘路径: 显式设成 exe 目录下的 output(绝对路径)。
-    // 不设的话 SDK 用相对路径 "output", 那要由【当前工作目录】解析 —— 从别的目录启动本程序
-    // 就会落到别处(在 Android 上更是直接失败, 因为工作目录 / 不可写)。
-    // 路径【不带扩展名】, SDK 按加密开关补 .aenc / .wav。
     if (m_recorderHandle){
         wchar_t exePath[MAX_PATH] = {};
         if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0){
@@ -383,10 +378,6 @@ void CMainWindows::AudioStartStopRec(){
     if (!SdkReady()) return;
     if (!m_isRecording){
         // ---- 开始录音 ----
-        // 波形这边不用注册任何回调(拉模式): RecorderStart 会把 SDK 那边的波形环
-        // 清空, 之后每 100ms 由定时器 ConsumeWaveRing 去拉一次。
-        //
-        // 波形从头开始: 丢掉上一轮的滚动窗口(否则新一轮会接着上一次的波形往后画)
         m_recWaveCount = 0;
 
         // C 接口返回的是 int 状态码, 想按名字判断就转回枚举(AudioSdkState 序号两端一致)

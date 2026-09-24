@@ -1,18 +1,9 @@
 /* @Created On : 2026/9/18
    @Author : 孟源
-   @note : 显式加载器的 Android 平台原语。
-          只装"开库 / 取符号 / 关库"这三个动作的 Android 写法, 加上库句柄类型和默认库名。
-          函数指针表(AudioSdkApi)是两平台共用的, 不在本文件 ——
-          见 sdk_loader/audio_sdk_loader.h
-
-          本文件不直接被调用方 include: 由上一层 audio_sdk_loader.h 按平台选路径带进来。
-          怎么用见 sdk_loader/audio_sdk_loader.h 顶部的说明
+   @note : 显式加载器的 Android 平台原语
 */
 #pragma once
 
-// 反向守卫: 这份是 Android 原语, 被别的平台编到就当场报错
-// 正常情况下轮不到它 —— audio_sdk_loader.h 按 _WIN32/__ANDROID__ 选路径
-// 这里是防"include 路径配错、把另一平台的头拖进来"
 #ifndef __ANDROID__
   #error "audio_sdk_loader.h: 这是 Android 平台原语, 不接受其它平台编译。请检查 include 路径里是不是混进了 sdk_loader/platform/android。"
 #endif
