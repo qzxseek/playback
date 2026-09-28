@@ -36,23 +36,8 @@
  * @brief 从动态库里取到的全部函数指针。
  *        Load() 失败返回 false, 用 LastError() 看是哪个符号没找到。
  */
-struct AudioSdkApi{
+struct AudioRecSdkApi{
     AudioSdkModuleHandle hModule = nullptr;   // 动态库句柄; 为空表示还没加载 / 加载失败
-
-    // —— 播放器 ——
-    decltype(&::AudioSdk_PlayerCreate)            PlayerCreate        = nullptr;
-    decltype(&::AudioSdk_PlayerDestroy)           PlayerDestroy       = nullptr;
-    decltype(&::AudioSdk_PlayerPlayFile)          PlayerPlayFile      = nullptr;
-    decltype(&::AudioSdk_PlayerPausePlay)         PlayerPausePlay     = nullptr;
-    decltype(&::AudioSdk_PlayerResumePlay)        PlayerResumePlay    = nullptr;
-    decltype(&::AudioSdk_PlayerStopPlay)          PlayerStopPlay      = nullptr;
-    decltype(&::AudioSdk_PlayerSeek)              PlayerSeek          = nullptr;
-    decltype(&::AudioSdk_PlayerGetPlayPos)        PlayerGetPlayPos    = nullptr;
-    decltype(&::AudioSdk_PlayerGetTotalPos)       PlayerGetTotalPos   = nullptr;
-    decltype(&::AudioSdk_PlayerIsPlaying)         PlayerIsPlaying     = nullptr;
-    decltype(&::AudioSdk_PlayerGetPlayPosMs)      PlayerGetPlayPosMs  = nullptr;
-    decltype(&::AudioSdk_PlayerGetTotalPosMs)     PlayerGetTotalPosMs = nullptr;
-    decltype(&::AudioSdk_PlayerBuildWaveform)     PlayerBuildWaveform = nullptr;
 
     // —— 录音器 ——
     decltype(&::AudioSdk_RecorderCreate)          RecorderCreate          = nullptr;
@@ -69,8 +54,8 @@ struct AudioSdkApi{
     decltype(&::AudioSdk_IsAencFile)              IsAencFile              = nullptr;
 
     /**
-     * @brief 显式加载: 打开动态库, 逐个取函数地址。
-     *        全部取到返回 true(幂等, 重复调用不会再加载一遍)。
+     * @brief 显式加载: 打开动态库, 逐个取函数地址
+     *        全部取到返回 true(幂等, 重复调用不会再加载一遍)
      * @param moduleName 库文件名或完整路径
      * @return 全部符号都取到返回 true; 任一缺失返回 false 并整体回滚
      */
@@ -83,22 +68,6 @@ struct AudioSdkApi{
       }
 
       bool bOk = true;
-
-      // 播放器
-      AUDIO_SDK_LOAD(PlayerCreate,        "AudioSdk_PlayerCreate");
-      AUDIO_SDK_LOAD(PlayerDestroy,       "AudioSdk_PlayerDestroy");
-      AUDIO_SDK_LOAD(PlayerPlayFile,      "AudioSdk_PlayerPlayFile");
-      AUDIO_SDK_LOAD(PlayerPausePlay,     "AudioSdk_PlayerPausePlay");
-      AUDIO_SDK_LOAD(PlayerResumePlay,    "AudioSdk_PlayerResumePlay");
-      AUDIO_SDK_LOAD(PlayerStopPlay,      "AudioSdk_PlayerStopPlay");
-      AUDIO_SDK_LOAD(PlayerSeek,          "AudioSdk_PlayerSeek");
-      AUDIO_SDK_LOAD(PlayerGetPlayPos,    "AudioSdk_PlayerGetPlayPos");
-      AUDIO_SDK_LOAD(PlayerGetTotalPos,   "AudioSdk_PlayerGetTotalPos");
-      AUDIO_SDK_LOAD(PlayerIsPlaying,     "AudioSdk_PlayerIsPlaying");
-      AUDIO_SDK_LOAD(PlayerGetPlayPosMs,  "AudioSdk_PlayerGetPlayPosMs");
-      AUDIO_SDK_LOAD(PlayerGetTotalPosMs, "AudioSdk_PlayerGetTotalPosMs");
-      AUDIO_SDK_LOAD(PlayerBuildWaveform, "AudioSdk_PlayerBuildWaveform");
-
       // 录音器
       AUDIO_SDK_LOAD(RecorderCreate,          "AudioSdk_RecorderCreate");
       AUDIO_SDK_LOAD(RecorderDestroy,         "AudioSdk_RecorderDestroy");
@@ -136,6 +105,77 @@ private:
     }
 };
 
+
+struct AudioPlaSdkApi{
+    AudioSdkModuleHandle hModule = nullptr;   // 动态库句柄; 为空表示还没加载 / 加载失败
+
+    // —— 播放器 ——
+    decltype(&::AudioSdk_PlayerCreate)            PlayerCreate        = nullptr;
+    decltype(&::AudioSdk_PlayerDestroy)           PlayerDestroy       = nullptr;
+    decltype(&::AudioSdk_PlayerPlayFile)          PlayerPlayFile      = nullptr;
+    decltype(&::AudioSdk_PlayerPausePlay)         PlayerPausePlay     = nullptr;
+    decltype(&::AudioSdk_PlayerResumePlay)        PlayerResumePlay    = nullptr;
+    decltype(&::AudioSdk_PlayerStopPlay)          PlayerStopPlay      = nullptr;
+    decltype(&::AudioSdk_PlayerSeek)              PlayerSeek          = nullptr;
+    decltype(&::AudioSdk_PlayerGetPlayPos)        PlayerGetPlayPos    = nullptr;
+    decltype(&::AudioSdk_PlayerGetTotalPos)       PlayerGetTotalPos   = nullptr;
+    decltype(&::AudioSdk_PlayerIsPlaying)         PlayerIsPlaying     = nullptr;
+    decltype(&::AudioSdk_PlayerGetPlayPosMs)      PlayerGetPlayPosMs  = nullptr;
+    decltype(&::AudioSdk_PlayerGetTotalPosMs)     PlayerGetTotalPosMs = nullptr;
+    decltype(&::AudioSdk_PlayerBuildWaveform)     PlayerBuildWaveform = nullptr;
+
+    /**
+     * @brief 显式加载: 打开动态库, 逐个取函数地址
+     *        全部取到返回 true(幂等, 重复调用不会再加载一遍)
+     * @param moduleName 库文件名或完整路径
+     * @return 全部符号都取到返回 true; 任一缺失返回 false 并整体回滚
+     */
+    bool Load(AudioSdkModuleName moduleName = AUDIO_SDK_MODULE_NAME){
+      if (hModule) return true;                     // 已经加载过
+      AUDIO_SDK_OPEN(hModule, moduleName);
+      if (hModule == nullptr) {
+          AudioSdkFormatOpenError(m_lastError, sizeof(m_lastError), moduleName);
+          return false;
+      }
+
+      bool bOk = true;
+
+      // 播放器
+      AUDIO_SDK_LOAD(PlayerCreate,        "AudioSdk_PlayerCreate");
+      AUDIO_SDK_LOAD(PlayerDestroy,       "AudioSdk_PlayerDestroy");
+      AUDIO_SDK_LOAD(PlayerPlayFile,      "AudioSdk_PlayerPlayFile");
+      AUDIO_SDK_LOAD(PlayerPausePlay,     "AudioSdk_PlayerPausePlay");
+      AUDIO_SDK_LOAD(PlayerResumePlay,    "AudioSdk_PlayerResumePlay");
+      AUDIO_SDK_LOAD(PlayerStopPlay,      "AudioSdk_PlayerStopPlay");
+      AUDIO_SDK_LOAD(PlayerSeek,          "AudioSdk_PlayerSeek");
+      AUDIO_SDK_LOAD(PlayerGetPlayPos,    "AudioSdk_PlayerGetPlayPos");
+      AUDIO_SDK_LOAD(PlayerGetTotalPos,   "AudioSdk_PlayerGetTotalPos");
+      AUDIO_SDK_LOAD(PlayerIsPlaying,     "AudioSdk_PlayerIsPlaying");
+      AUDIO_SDK_LOAD(PlayerGetPlayPosMs,  "AudioSdk_PlayerGetPlayPosMs");
+      AUDIO_SDK_LOAD(PlayerGetTotalPosMs, "AudioSdk_PlayerGetTotalPosMs");
+      AUDIO_SDK_LOAD(PlayerBuildWaveform, "AudioSdk_PlayerBuildWaveform");
+      if (!bOk) { Unload(); return false; }          // 缺符号就整体回滚, 别留半套指针
+      return true;
+    }
+
+    /// 卸载动态库(调用前先销毁由它创建的对象, 否则析构会跳进已卸载的代码)
+    void Unload()
+    {
+        if (hModule) { AUDIO_SDK_CLOSE(hModule); hModule = nullptr; }
+    }
+
+    /// 上一次 Load 失败的原因, 供 UI 弹窗提示
+    const char* LastError() const { return m_lastError; }
+
+private:
+    char m_lastError[128] = {};
+
+    inline void LoadFailed(const char* symbol){
+        std::snprintf(m_lastError, sizeof(m_lastError),
+                      "symbol \"%s\" not found - SDK/header version mismatch?",
+                      symbol);
+    }
+};
 #endif  // __cplusplus
 
 

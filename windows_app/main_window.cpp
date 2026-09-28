@@ -39,48 +39,128 @@ static std::wstring Utf8ToWide(const char* utf8)
     return wide;
 }
 
-CMainWindows::CMainWindows(){
-    // 显式加载
-    if (!m_api.Load()){
-        MessageBoxW(nullptr, Utf8ToWide(m_api.LastError()).c_str(),
-                    L"加载 audio_sdk.dll 失败", MB_OK | MB_ICONERROR);
-        return;                       // 句柄保持 nullptr; CreateControls 里会把音频按钮禁掉
-    }
+// --------------双链路工作线程--------------
 
-    m_recorderHandle = m_api.RecorderCreate();
-    m_playerHandle   = m_api.PlayerCreate();
-    if (!m_recorderHandle || !m_playerHandle)
-        MessageBoxW(nullptr, L"创建录音/播放对象失败(内存不足?)",
-                    L"音频 SDK", MB_OK | MB_ICONERROR);
+/**
+ * @brief WM_CREATE: 起全部工作线程(两条录音 lane + 一条播放线程)
+ */
+void CMainWindows::StartWorkers(){
+    for (int i = 0; i < 2; ++i)
+        m_recLanes[i].worker = std::thread(RecWorkerLoop, this, i);
+    m_playWorker = std::thread(PlayWorkerLoop, this);
+}
 
-    if (m_recorderHandle){
-        wchar_t exePath[MAX_PATH] = {};
-        if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0){
-            std::wstring base(exePath);
-            const size_t slash = base.find_last_of(L'\\');
-            base.resize(slash == std::wstring::npos ? 0 : slash + 1);   // 砍掉 exe 文件名, 留下目录
-            base += L"output";          // 仍叫 output → 停止录音那句提示文案依然成立
-            m_api.RecorderSetOutputPath(m_recorderHandle, WideToUtf8(base).c_str());
-        }
+/**
+ * @brief 析构/收尾: 两条录音 lane 和播放线程各投一个 Exit → 逐一 join
+ * @note 全程序唯一允许 UI 等线程的地方(关程序)。先录音后播放:
+ *       录音 lane 可能还卡在落盘, 先给它机会写完
+ */
+void CMainWindows::StopWorkers(){
+    for (int i = 0; i < 2; ++i)
+        m_recLanes[i].q.Push({Cmd::Exit, nullptr});    
+    m_playQ.Push({Cmd::Exit, L""});
+    for (int i = 0; i < 2; ++i)
+        if (m_recLanes[i].worker.joinable())
+            m_recLanes[i].worker.join();
+    if (m_playWorker.joinable())
+        m_playWorker.join();
+}
+
+/**
+ * @brief 录音 lane 主循环: 串行执行本 lane 收到的 Start/Stop 命令
+ * @param self 实例指针(静态入口传 this)
+ * @param lane 本线程对应的 lane 号(0/1)
+ * @note 一个会话(新建对象→Start→…→Stop落盘)全部在本线程完成 ——
+ *       这就是"录音器对象的 m_vecRecData 不被两条会话共用"的结构保证。
+ *       两条 lane 互不同步, lane0 落盘时 lane1 照常开录
+ */
+void CMainWindows::RecWorkerLoop(CMainWindows* self, int lane){
+    auto& q = self->m_recLanes[lane].q;
+    for (;;){
+        Cmd::RecCommand cmd;
+        if (!q.Pop(cmd))
+            break;                                    // Exit 命令
+        // 同一会话的 Start/Stop 都落在本线程本对象上 —— 串行, 无并发
+        const int st = (cmd.op == Cmd::RecStart)
+            ? self->m_recApi.RecorderStart(cmd.handle)
+            : self->m_recApi.RecorderStop(cmd.handle);
+        ::PostMessage(self->m_hwnd, WM_APP_SDK_DONE,
+                      MAKEWPARAM(cmd.op, lane), static_cast<LPARAM>(st));
     }
 }
 
+/**
+ * @brief 播放链主循环: PlayFile + BuildWaveform 都在本线程跑完再回报
+ * @param self 实例指针
+ */
+void CMainWindows::PlayWorkerLoop(CMainWindows* self){
+    for (;;){
+        Cmd::PlayCommand cmd;
+        if (!self->m_playQ.Pop(cmd))
+            break;                                    // Exit 命令
+        if (cmd.op != Cmd::PlayFile) continue;
+
+        const std::string utf8Path = WideToUtf8(cmd.path);
+        const int st = self->m_playApi.PlayerPlayFile(self->m_playerHandle, utf8Path.c_str());
+        if (st == static_cast<int>(AudioSdk::AudioSdkState::NONE)){
+            // 整段波形: 回调跑在本线程, 数据经锁拷进成员(UI 画的时候再拷出)
+            self->CopyFileWave(nullptr, 0);           // 先清掉上一个文件的波形
+            self->m_playApi.PlayerBuildWaveform(self->m_playerHandle,
+                                                &CMainWindows::OnWaveFromFile, self);
+        }
+        ::PostMessage(self->m_hwnd, WM_APP_SDK_DONE,
+                      MAKEWPARAM(Cmd::PlayFile, 0), static_cast<LPARAM>(st));
+    }
+}
+
+CMainWindows::CMainWindows(){
+    // 显式加载: 两条链各开一次库
+    if (!m_recApi.Load()){
+        MessageBoxW(nullptr, Utf8ToWide(m_recApi.LastError()).c_str(),
+                    L"加载 audio_sdk.dll 失败", MB_OK | MB_ICONERROR);
+        m_playApi.Unload();           
+        return;                       // 句柄保持 nullptr; CreateControls 里会把音频按钮禁掉
+    }
+    if (!m_playApi.Load()){
+        MessageBoxW(nullptr, Utf8ToWide(m_playApi.LastError()).c_str(),
+                    L"加载 audio_sdk.dll 失败", MB_OK | MB_ICONERROR);
+        m_recApi.Unload();
+        return;
+    }
+
+    // 播放链全程只有一个对象, 起来时建好
+    m_playerHandle = m_playApi.PlayerCreate();
+    m_playerHandles.push_back(m_playerHandle);
+    // 录音器不预建: 每次开始录音时按需新建(独立 m_vecRecData),
+    m_recorderHandle = nullptr;
+
+    if (!m_playerHandle)
+        MessageBoxW(nullptr, L"创建播放对象失败(内存不足?)",
+                    L"音频 SDK", MB_OK | MB_ICONERROR);
+}
+
 CMainWindows::~CMainWindows(){
-    if (m_isRecording){
+    if (m_isRecording)
         AudioStartStopRec();
-    }
-    if (m_isPlaying){
+    if (m_isPlaying)
         AudioStartStopPlay();
-    }
-    // 先销毁 dll 里的对象, 再卸 dll —— 顺序反了就是往已卸载的代码里跳
-    if (m_api.hModule){
-        // 波形改拉模式后, 录音器不再持有调用方的函数指针, 销毁它不会回调进本对象
-        m_api.RecorderDestroy(m_recorderHandle);
-        m_api.PlayerDestroy(m_playerHandle);
-        m_recorderHandle = nullptr;
-        m_playerHandle   = nullptr;
-        m_api.Unload();
-    }
+
+    // 关闭录音和播放两条工作线程
+    StopWorkers();
+
+    // 先销毁 dll 里的所有对象, 再卸 dll —— 顺序反了就是往已卸载的代码里跳
+    for (void* h : m_recorderHandles)
+        m_recApi.RecorderDestroy(h);
+    m_recorderHandles.clear();
+    for (void* h : m_playerHandles)
+        m_playApi.PlayerDestroy(h);
+    m_playerHandles.clear();
+    m_recorderHandle = nullptr;
+    m_playerHandle   = nullptr;
+
+    // 释放录音和播放链的库句柄
+    m_recApi.Unload();
+    m_playApi.Unload();
 }
 
 /**
@@ -97,22 +177,43 @@ static void FormatMs(wchar_t* out, size_t cch, DWORD ms){
 }
 
 /**
- * @brief 文件波形回调 —— 在【调用线程】(这里是 UI 线程)同步执行, 无并发
+ * @brief 文件波形回调 —— 在【播放线程】执行
  * @param minmax 峰值对
  * @param points 点数
  * @param userData 注册时传进来的 this
  */
 void CMainWindows::OnWaveFromFile(const float* minmax, int points, void* userData){
-    if (!minmax || points <= 0) return;
     auto* self = static_cast<CMainWindows*>(userData);
     if (!self) return;
+    self->CopyFileWave(minmax, points);
+}
 
+/**
+ * @brief 播放线程写一整批文件波形(锁内); minmax 为空表示清空
+ */
+void CMainWindows::CopyFileWave(const float* minmax, int points){
+    std::lock_guard<std::mutex> lk(m_fileWaveMtx);
+    if (!minmax || points <= 0){
+        m_fileWaveCount = 0;
+        return;
+    }
     const int n = points < AUDIO_SDK_WAVE_FILE_POINTS ? points : AUDIO_SDK_WAVE_FILE_POINTS;
     for (int i = 0; i < n; ++i){
-        self->m_fileWave[i][0] = minmax[i * 2];
-        self->m_fileWave[i][1] = minmax[i * 2 + 1];
+        m_fileWave[i][0] = minmax[i * 2];
+        m_fileWave[i][1] = minmax[i * 2 + 1];
     }
-    self->m_fileWaveCount = n;
+    m_fileWaveCount = n;
+}
+
+/**
+ * @brief UI 线程拷一份文件波形快照(锁内), 拿去画, 不和播放线程的写入纠缠
+ * @return 有效点数(out 里前这么多对有效)
+ */
+int CMainWindows::SnapshotFileWave(float (&out)[AUDIO_SDK_WAVE_FILE_POINTS][2]) const{
+    std::lock_guard<std::mutex> lk(m_fileWaveMtx);
+    if (m_fileWaveCount > 0)
+        std::memcpy(out, m_fileWave, sizeof(float) * m_fileWaveCount * 2);
+    return m_fileWaveCount;
 }
 
 /**
@@ -159,13 +260,51 @@ bool CMainWindows::ConsumeWaveRing(){
     if (!SdkReady() || !m_recorderHandle) return false;
     bool got = false;
     for (;;){
-        const int n = m_api.RecorderReadWave(m_recorderHandle, m_wavePull,
-                                             AUDIO_SDK_WAVE_BLOCK_POINTS);
+        const int n = m_recApi.RecorderReadWave(m_recorderHandle, m_wavePull,
+                                                AUDIO_SDK_WAVE_BLOCK_POINTS);
         if (n <= 0) break;              // 0 = 暂无新数据, 不是错误
         AppendToRecWave(m_wavePull, n);
         got = true;
     }
     return got;
+}
+
+/**
+ * @brief 每次开录新建一个录音器对象(会话专属), 挂进容器统一销毁
+ * @param outPath 回填本会话的输出路径(不含扩展名), 供结果提示显示真实文件名
+ * @return 新对象句柄; 创建失败返回 nullptr
+ */
+void* CMainWindows::TakeRecorder(std::wstring& outPath){
+    void* h = m_recApi.RecorderCreate();
+    if (h){
+        outPath = NextOutputPath();
+        m_recorderHandles.push_back(h);
+        m_recApi.RecorderSetOutputPath(h, WideToUtf8(outPath).c_str());
+        // 新建对象的加密开关要跟 UI 勾选状态对齐(SDK 默认开)
+        if (!m_encryptOn)
+            m_recApi.RecorderSetAencEncrypt(h);
+    }
+    return h;
+}
+
+/**
+ * @brief 每会话输出路径: exe 目录\output_时间戳_序号(.aenc/.wav 由 SDK 按开关定)
+ */
+std::wstring CMainWindows::NextOutputPath(){
+    wchar_t exePath[MAX_PATH] = {};
+    std::wstring base;
+    if (GetModuleFileNameW(nullptr, exePath, MAX_PATH) > 0){
+        base = exePath;
+        const size_t slash = base.find_last_of(L'\\');
+        base.resize(slash == std::wstring::npos ? 0 : slash + 1);   // 留下目录
+    }
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t stamp[48];
+    swprintf_s(stamp, std::size(stamp), L"output_%04u%02u%02u_%02u%02u%02u_%u",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+               ++m_outputSeq);
+    return base + stamp;
 }
 
 /**
@@ -175,6 +314,7 @@ bool CMainWindows::ConsumeWaveRing(){
 void CMainWindows::OnCreate(HWND hwnd){
     m_hwnd = hwnd;
     CreateControls(hwnd);
+    StartWorkers();                                            
     SetTimer(hwnd, TIMER_PROGRESS, TIMER_INTERVAL_MS, NULL);   // 启动进度心跳
 }
 
@@ -236,9 +376,9 @@ void CMainWindows::CreateControls(HWND hwnd){
         EnableWindow(m_hChkEnc, FALSE);
         return;
     }
-    // 勾选框初始状态 = 录音器真实的加密开关(默认开)。
+    // 勾选框初始状态: UI 侧记录的加密开关(与每会话新建对象时套用的值一致, 默认开)
     SendMessageW(m_hChkEnc, BM_SETCHECK,
-                 m_api.RecorderGetAencEncrypt(m_recorderHandle) ? BST_CHECKED : BST_UNCHECKED, 0);
+                 m_encryptOn ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 /**
@@ -283,6 +423,10 @@ LRESULT CMainWindows::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 OnTimerTick();
             return 0;
 
+        case WM_APP_SDK_DONE:                // 工作线程回报: 命令码 + 录音 lane(wParam) + 状态码(lParam)
+            OnSdkDone(LOWORD(wParam), HIWORD(wParam), static_cast<int>(lParam));
+            return 0;
+
         case WM_LBUTTONDOWN:                 // 进度条上按下: 进入"预览拖动"
             if (m_isPlaying){
                 int cx = (short)LOWORD(lParam);          // 客户区 x
@@ -308,8 +452,8 @@ LRESULT CMainWindows::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 m_dragging = false;
                 ReleaseCapture();
                 if (m_isPlaying){
-                    m_api.PlayerSeek(m_playerHandle, m_playPosBytes);          // 点哪跳哪 / 拖到哪跳到哪
-                    m_playPosBytes = m_api.PlayerGetPlayPos(m_playerHandle);   // Seek 内部做了帧对齐
+                    m_playApi.PlayerSeek(m_playerHandle, m_playPosBytes);          
+                    m_playPosBytes = m_playApi.PlayerGetPlayPos(m_playerHandle);   
                     UpdateProgressUI();
                 }
             }
@@ -351,11 +495,10 @@ void CMainWindows::OnCommand(int iId){
         AudioPauseResumeRec();
         break;
     case BTN_ENCRYPT:                      // 加密复选框(点击后勾选已自动翻转)
-        if (!m_isRecording)
-            m_api.RecorderSetAencEncrypt(m_recorderHandle);   // 翻转 recorder 内部加密状态
-        // 让勾选显示与 recorder 真实状态保持一致
+        // 开关记在 UI 侧: 录音器每会话新建, 建对象时套用当下勾选值
+        m_encryptOn = !m_encryptOn;
         SendMessageW(m_hChkEnc, BM_SETCHECK,
-                     m_api.RecorderGetAencEncrypt(m_recorderHandle) ? BST_CHECKED : BST_UNCHECKED, 0);
+                     m_encryptOn ? BST_CHECKED : BST_UNCHECKED, 0);
         break;
     case BTN_OPEN_FILE:
         OpenFileDialog(m_hwnd);
@@ -378,61 +521,138 @@ void CMainWindows::AudioStartStopRec(){
     if (!SdkReady()) return;
     if (!m_isRecording){
         // ---- 开始录音 ----
-        m_recWaveCount = 0;
-
-        // C 接口返回的是 int 状态码, 想按名字判断就转回枚举(AudioSdkState 序号两端一致)
-        const int startSt = m_api.RecorderStart(m_recorderHandle);
-        if (startSt != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
-            // 内存不足和"设备打不开"是两回事, 提示得分开 —— 否则用户会去查设备
-            MessageBoxW(m_hwnd,
-                        (startSt == static_cast<int>(AudioSdk::AudioSdkState::OUT_OF_MEMORY))
-                            ? L"内存不足，无法开始录音"
-                            : L"打开录音设备失败",
-                        L"录音", MB_OK | MB_ICONERROR);
+        std::wstring sOutPath;
+        void* handle = TakeRecorder(sOutPath);
+        if (!handle){
+            MessageBoxW(m_hwnd, L"创建录音器失败", L"录音", MB_OK | MB_ICONERROR);
             return;
         }
-        InvalidateWave();
-        m_isRecording = true;
-        m_recPaused   = false;
-        SetWindowTextW(m_hBtnRec_Start_Stop, L"停止录音");
-        SetWindowTextW(m_hBtnRecPause, L"暂停录音");
-        EnableWindow(m_hBtnRecPause, TRUE);
-        EnableWindow(m_hChkEnc, FALSE);          // 录制中不能改加密
-        EnableWindow(m_hBtnOpen, FALSE);         // 录音时禁用播放区
-        EnableWindow(m_hBtnPlay_Start_Stop, FALSE);
-        EnableWindow(m_hBtnPlayPause, FALSE);
-        UpdateRecTimeUI(0);                       // 录音时长归零
+
+        m_recWaveCount = 0;
+        m_activeLane = m_recLaneIdx;
+        m_recorderHandle = handle;                      // 轮询(计时/波形)用当前会话对象
+        m_laneRec[m_activeLane]  = handle;              
+        m_lanePath[m_activeLane] = sOutPath;        
+        m_recBusy = true;                          // 设备打开中, 结果回来前开始按钮置灰
+        SetRecGroupEnabled(false);
+        m_recLanes[m_activeLane].q.Push({Cmd::RecStart, handle});
     }
     else{
-        // ---- 停止录音 → 落盘 ----
-        const int stopSt = m_api.RecorderStop(m_recorderHandle);
-        // 设备停了, 但 SDK 的波形环里还留着最后一批点 —— 再拉一次, 把收尾那一块
-        // 也画上(下一次 RecorderStart 会清空它, 这里是最后机会)
+        // ---- 停止录音 ----
         if (ConsumeWaveRing()) InvalidateWave();
-        m_isRecording = false;
-        m_recPaused   = false;
+
+        const int lane = m_activeLane;
+        void* handle = m_laneRec[lane];                 // 本会话对象(Start 时记下的)
+        m_laneRec[lane] = nullptr;
+
+        m_isRecording  = false;
+        m_recPaused    = false;
+        m_savingHandle[lane] = handle;                  // 落盘结果回来时按 lane 终读它的波形尾巴
         UpdateRecTimeUI(0);                         // 录音时长归零
         SetWindowTextW(m_hBtnRec_Start_Stop, L"开始录音");
         SetWindowTextW(m_hBtnRecPause, L"暂停录音");
         EnableWindow(m_hBtnRecPause, FALSE);
         EnableWindow(m_hChkEnc, TRUE);
         EnableWindow(m_hBtnOpen, TRUE);
-        if (!m_curFile.empty())
+        if (!m_curFile.empty() && !m_playBusy)
             EnableWindow(m_hBtnPlay_Start_Stop, TRUE);
+        // 开始按钮保持可用 —— 立刻能开下一段, 不等这段写完盘(乒乓的意义)
+        SetWindowTextW(m_hLblRecTime, L"正在保存…");
+        m_recLanes[lane].q.Push({Cmd::RecStop, handle});
+    }
+    m_recLaneIdx ^= 1;                             // 乒乓翻到另一条 lane(下轮用)
+}
 
-        if (stopSt == static_cast<int>(AudioSdk::AudioSdkState::OUT_OF_MEMORY)){
+/**
+ * @brief 工作线程结果处理: 按命令码分岔, 更新 UI 状态并恢复按钮
+ * @param op 命令码(LOWORD(wParam))
+ * @param lane 发来结果的录音 lane 号(HIWORD(wParam); 播放链恒 0)
+ * @param state AudioSdkState 状态码(lParam)
+ */
+void CMainWindows::OnSdkDone(UINT op, UINT lane, int state){
+    if (op == Cmd::RecStart){
+        m_recBusy = false;
+        if (state != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
+            // 内存不足和"设备打不开"是两回事, 提示得分开 —— 否则用户会去查设备
+            MessageBoxW(m_hwnd,
+                        (state == static_cast<int>(AudioSdk::AudioSdkState::OUT_OF_MEMORY))
+                            ? L"内存不足，无法开始录音"
+                            : L"打开录音设备失败",
+                        L"录音", MB_OK | MB_ICONERROR);
+            m_isRecording = false;
+            m_recorderHandle = nullptr;            // 会话作废(对象仍由析构统一销毁)
+        }
+        else{
+            m_isRecording = true;
+            m_recPaused   = false;
+        }
+        SetRecGroupEnabled(true);
+        if (m_isRecording){
+            SetWindowTextW(m_hBtnRec_Start_Stop, L"停止录音");
+            EnableWindow(m_hBtnRecPause, TRUE);
+            EnableWindow(m_hChkEnc, FALSE);          // 录制中不能改加密
+            EnableWindow(m_hBtnOpen, FALSE);         // 录音时禁用播放区
+            EnableWindow(m_hBtnPlay_Start_Stop, FALSE);
+            EnableWindow(m_hBtnPlayPause, FALSE);
+            UpdateRecTimeUI(0);                     // 录音时长归零
+        }
+        return;
+    }
+
+    if (op == Cmd::RecStop){
+        // 设备已停、数据已写盘。波形尾巴归本会话对象所有, 从它那里终读最后一次。
+        // 按 lane 取句柄: 另一条 lane 可能也在落盘, 各认各的会话对象。
+        if (m_savingHandle[lane]){
+            float tail[AUDIO_SDK_WAVE_BLOCK_POINTS * 2];
+            for (;;){
+                const int n = m_recApi.RecorderReadWave(m_savingHandle[lane], tail,
+                                                        AUDIO_SDK_WAVE_BLOCK_POINTS);
+                if (n <= 0) break;
+                AppendToRecWave(tail, n);
+            }
+            InvalidateWave();
+        }
+        m_savingHandle[lane] = nullptr;
+
+        // 提示里带上真实文件名: 每段录音都是独立文件, 不报名字用户找不到刚存的那个
+        const std::wstring& full = m_lanePath[lane];
+        const size_t sep = full.find_last_of(L"\\/");
+        const std::wstring name = (sep == std::wstring::npos) ? full : full.substr(sep + 1);
+        wchar_t msg[128];
+        if (state == static_cast<int>(AudioSdk::AudioSdkState::OUT_OF_MEMORY))
             MessageBoxW(m_hwnd, L"内存不足，录音数据不完整（已保存录到的部分）",
                         L"录音", MB_OK | MB_ICONWARNING);
-            return;
-        }
-        if (stopSt != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
+        else if (state != static_cast<int>(AudioSdk::AudioSdkState::NONE))
             MessageBoxW(m_hwnd, L"录音保存失败", L"录音", MB_OK | MB_ICONERROR);
+        else{
+            swprintf_s(msg, std::size(msg), L"录音已保存为 %s%s",
+                       name.c_str(), m_encryptOn ? L".aenc" : L".wav");
+            MessageBoxW(m_hwnd, msg, L"录音", MB_OK | MB_ICONINFORMATION);
+        }
+        m_lanePath[lane].clear();
+        SetWindowTextW(m_hLblRecTime, L"录音时长: 00:00.0");
+        return;
+    }
+
+    if (op == Cmd::PlayFile){
+        m_playBusy = false;
+        if (state != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
+            // 开始播放失败: 复位播放区, 提示失败原因
+            m_isPlaying = false;
+            m_playPaused = false;
+            SetPlayGroupIdle();
+            ShowPlayError(state);
             return;
         }
-        MessageBoxW(m_hwnd, m_api.RecorderGetAencEncrypt(m_recorderHandle)
-                            ? L"录音已保存为加密 output.aenc"
-                            : L"录音已保存为明文 output.wav",
-                    L"录音", MB_OK | MB_ICONINFORMATION);
+        // 播放已开始: 刷波形、记总长、播放区进入"播放中"布局
+        InvalidateWave();
+        m_isPlaying  = true;
+        m_playPaused = false;
+        m_dragging   = false;
+        m_playTotalBytes = m_playApi.PlayerGetTotalPos(m_playerHandle);
+        m_playPosBytes   = 0;
+        SetPlayGroupPlaying();
+        UpdateProgressUI();
     }
 }
 
@@ -441,9 +661,19 @@ void CMainWindows::AudioStartStopRec(){
  */
 void CMainWindows::AudioPauseResumeRec(){
     if (!m_isRecording) return;
-    m_api.RecorderPauseResume(m_recorderHandle);
-    m_recPaused = m_api.RecorderGetIsPaused(m_recorderHandle) != 0;
+    m_recApi.RecorderPauseResume(m_recorderHandle);
+    m_recPaused = m_recApi.RecorderGetIsPaused(m_recorderHandle) != 0;
     SetWindowTextW(m_hBtnRecPause, m_recPaused ? L"继续录音" : L"暂停录音");
+}
+
+/**
+ * @brief 录音组按钮统一置灰/恢复(开始/停止/暂停/加密 + 关联的会话对象操作)
+ * @param on true=恢复可用, false=置灰
+ */
+void CMainWindows::SetRecGroupEnabled(bool on){
+    EnableWindow(m_hBtnRec_Start_Stop, on);
+    EnableWindow(m_hBtnRecPause, on && m_isRecording);   // 暂停只在录音中可用
+    EnableWindow(m_hChkEnc, on && !m_isRecording);       // 加密只在非录制中可改
 }
 
 /**
@@ -469,7 +699,7 @@ bool CMainWindows::OpenFileDialog(HWND hwndOwner){
     // 可选: 在窗口标题上显示当前文件, 直观反馈选到了什么。
     std::wstring title = L"Win32 音频播放器 - ";
     title += file;
-    title += m_api.IsAencFile(WideToUtf8(file).c_str())
+    title += m_recApi.IsAencFile(WideToUtf8(file).c_str())
                  ? L"  (加密 .aenc)" : L"  (明文)";
     SetWindowTextW(m_hwnd, title.c_str());
 
@@ -492,66 +722,25 @@ void CMainWindows::UpdateRecTimeUI(DWORD ms){
 // --------------播放相关------------------
 
 /**
- * @brief 开始 / 停止播放(按当前状态)
+ * @brief 按状态码给播放失败文案(开始/停止共用)
+ * @param state AudioSdkState 状态码
  */
-void CMainWindows::AudioStartStopPlay(){
-    if (!SdkReady()) return;
-    // ---- 停止播放 ----
-    if (m_isPlaying) {
-        m_api.PlayerStopPlay(m_playerHandle);
-        m_isPlaying  = false;
-        m_playPaused = false;
-        m_playPosBytes = 0;
-        m_dragging   = false;
-
-        SetWindowTextW(m_hBtnPlay_Start_Stop, L"播放");
-        SetWindowTextW(m_hBtnPlayPause, L"暂停");
-        EnableWindow(m_hBtnPlay_Start_Stop,     TRUE);
-        EnableWindow(m_hBtnPlayPause, FALSE);
-        EnableWindow(m_hBtnOpen,      TRUE);
-        EnableWindow(m_hBtnRec_Start_Stop, TRUE);
-        EnableWindow(m_hChkEnc, TRUE);
-        if (!m_recPaused)
-            EnableWindow(m_hBtnRecPause, FALSE);
-
-        UpdateProgressUI();
-        return;
-    };
-
-    // ---- 开始播放 ----
-    if (m_curFile.empty()){
-        MessageBoxW(m_hwnd, L"请先点【打开文件】选择音频", L"播放", MB_OK | MB_ICONINFORMATION);
-        return;
+void CMainWindows::ShowPlayError(int state){
+    const wchar_t* msg = L"播放失败";
+    switch (static_cast<AudioSdk::AudioSdkState>(state)){
+        case AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED:msg = L"格式不支持"; break;
+        case AudioSdk::AudioSdkState::FILE_OPEN_FAILED:msg = L"文件打开失败"; break;
+        case AudioSdk::AudioSdkState::DEVICE_BUSY:msg = L"设备被占用"; break;
+        case AudioSdk::AudioSdkState::DEVICE_NOT_FOUND:msg = L"找不到播放设备"; break;
+        default: break;
     }
+    MessageBoxW(m_hwnd, msg, L"播放", MB_OK | MB_ICONERROR);
+}
 
-    const int res = m_api.PlayerPlayFile(m_playerHandle, WideToUtf8(m_curFile).c_str());
-    if (res != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
-        const wchar_t* msg = L"播放失败";
-        switch (static_cast<AudioSdk::AudioSdkState>(res)){
-            case AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED:msg = L"格式不支持"; break;
-            case AudioSdk::AudioSdkState::FILE_OPEN_FAILED:msg = L"文件打开失败"; break;
-            case AudioSdk::AudioSdkState::DEVICE_BUSY:msg = L"设备被占用"; break;
-            case AudioSdk::AudioSdkState::DEVICE_NOT_FOUND:msg = L"找不到播放设备"; break;
-            default: break;
-        }
-        MessageBoxW(m_hwnd, msg, L"播放", MB_OK | MB_ICONERROR);
-        return;
-    }
-
-    // 播放已开始: 让 SDK 把整段波形算出来。
-    // 这是同步回调(在 UI 线程内跑完), 回调直接把数据填进 m_fileWave, 无并发。
-    m_fileWaveCount = 0;    // 先清空: 万一新文件算不出波形, 也别留着上一个文件的
-    m_api.PlayerBuildWaveform(m_playerHandle, &CMainWindows::OnWaveFromFile, this);
-
-    // 刷新波形区
-    InvalidateWave();
-
-    m_isPlaying  = true;
-    m_playPaused = false;
-    m_dragging   = false;
-    m_playTotalBytes = m_api.PlayerGetTotalPos(m_playerHandle);
-    m_playPosBytes   = 0;
-
+/**
+ * @brief 播放组按钮按"播放中"布局刷新(停止/暂停可用, 打开文件与录音组禁用)
+ */
+void CMainWindows::SetPlayGroupPlaying(){
     SetWindowTextW(m_hBtnPlay_Start_Stop, L"停止");
     SetWindowTextW(m_hBtnPlayPause, L"暂停");
     EnableWindow(m_hBtnPlay_Start_Stop, TRUE);
@@ -560,8 +749,60 @@ void CMainWindows::AudioStartStopPlay(){
     EnableWindow(m_hBtnRec_Start_Stop, FALSE);
     EnableWindow(m_hBtnRecPause, FALSE);
     EnableWindow(m_hChkEnc, FALSE);
+}
 
-    UpdateProgressUI();
+/**
+ * @brief 播放组按钮按"非播放中"布局刷新(同时尊重录音状态与忙标志)
+ */
+void CMainWindows::SetPlayGroupIdle(){
+    SetWindowTextW(m_hBtnPlay_Start_Stop, L"播放");
+    SetWindowTextW(m_hBtnPlayPause, L"暂停");
+    EnableWindow(m_hBtnPlay_Start_Stop, !m_curFile.empty() && !m_playBusy);
+    EnableWindow(m_hBtnPlayPause, FALSE);
+    EnableWindow(m_hBtnOpen,      TRUE);
+    EnableWindow(m_hBtnRec_Start_Stop, !m_recBusy && !m_isRecording);
+    EnableWindow(m_hChkEnc, !m_isRecording);
+    EnableWindow(m_hBtnRecPause, m_isRecording);       // 录音中暂停仍可用
+}
+
+/**
+ * @brief 开始 / 停止播放(按当前状态)。
+ *        开始 = 投 PlayFile 给播放线程(读文件+校验, 慢); 停止 = UI 线程同步停(快)
+ */
+void CMainWindows::AudioStartStopPlay(){
+    if (!SdkReady()) return;
+    // ---- 停止播放 ----
+    if (m_isPlaying) {
+        m_playApi.PlayerStopPlay(m_playerHandle);
+        m_isPlaying  = false;
+        m_playPaused = false;
+        m_playPosBytes = 0;
+        m_dragging   = false;
+
+        SetPlayGroupIdle();
+        UpdateProgressUI();
+        return;
+    };
+
+    // ---- 开始播放: 投命令给播放线程, 置灰等结果 ----
+    if (m_curFile.empty()){
+        MessageBoxW(m_hwnd, L"请先点【打开文件】选择音频", L"播放", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    m_playBusy = true;
+    SetPlayGroupEnabled(FALSE);
+    SetWindowTextW(m_hLblTime, L"正在打开…");
+    m_playQ.Push({Cmd::PlayFile, m_curFile});           // 路径拷贝进命令, UI 立即返回
+}
+
+/**
+ * @brief 播放组按钮统一置灰/恢复(开始播放/暂停/打开文件)
+ */
+void CMainWindows::SetPlayGroupEnabled(bool on){
+    EnableWindow(m_hBtnPlay_Start_Stop, on);
+    EnableWindow(m_hBtnPlayPause, on && m_isPlaying);
+    EnableWindow(m_hBtnOpen, on);
 }
 
 /**
@@ -570,12 +811,12 @@ void CMainWindows::AudioStartStopPlay(){
 void CMainWindows::AudioPauseResumePlay(){
     if (!m_isPlaying) return;
     if (m_playPaused){
-        m_api.PlayerResumePlay(m_playerHandle);
+        m_playApi.PlayerResumePlay(m_playerHandle);
         m_playPaused = false;
         SetWindowTextW(m_hBtnPlayPause, L"暂停");
     }
     else{
-        m_api.PlayerPausePlay(m_playerHandle);
+        m_playApi.PlayerPausePlay(m_playerHandle);
         m_playPaused = true;
         SetWindowTextW(m_hBtnPlayPause, L"继续");
     }
@@ -627,7 +868,7 @@ void CMainWindows::OnTimerTick(){
     if (!SdkReady()) return;                       // dll 没加载, 定时器空转就行
     if (m_isRecording){
         // 已录时长同样问 SDK 要毫秒, UI 不自己按采样率算
-        UpdateRecTimeUI(m_api.RecorderGetRecordedMs(m_recorderHandle));
+        UpdateRecTimeUI(m_recApi.RecorderGetRecordedMs(m_recorderHandle));
         // 波形: 音频线程只往 SDK 自己的环里写, 这里(UI 线程)每 100ms 拉一次
         if (ConsumeWaveRing()) InvalidateWave();
     }
@@ -635,13 +876,13 @@ void CMainWindows::OnTimerTick(){
     if (!m_isPlaying) return;                     // 没在播就不刷
     if (m_dragging) return;                        // 拖动预览中, 不抢位置
 
-    m_playPosBytes   = m_api.PlayerGetPlayPos(m_playerHandle);
-    m_playTotalBytes = m_api.PlayerGetTotalPos(m_playerHandle);
+    m_playPosBytes   = m_playApi.PlayerGetPlayPos(m_playerHandle);
+    m_playTotalBytes = m_playApi.PlayerGetTotalPos(m_playerHandle);
 
     UpdateProgressUI();
 
     // 自然播完: 之前还在播, 现在播放器自己停了(不是暂停)
-    if (!m_playPaused && !m_api.PlayerIsPlaying(m_playerHandle)){
+    if (!m_playPaused && !m_playApi.PlayerIsPlaying(m_playerHandle)){
         m_playPosBytes = m_playTotalBytes;
         UpdateProgressUI();
         AudioStartStopPlay();
@@ -653,8 +894,8 @@ void CMainWindows::OnTimerTick(){
  */
 void CMainWindows::UpdateProgressUI(){
     // 时间文字: 直接问 SDK 要毫秒(字节→时间的换算归 SDK, UI 不碰文件、不碰字节率)
-    const DWORD posMs = m_api.PlayerGetPlayPosMs(m_playerHandle);
-    const DWORD totMs = m_api.PlayerGetTotalPosMs(m_playerHandle);
+    const DWORD posMs = m_playApi.PlayerGetPlayPosMs(m_playerHandle);
+    const DWORD totMs = m_playApi.PlayerGetTotalPosMs(m_playerHandle);
 
     wchar_t now[16], tot[16], text[48];
     FormatMs(now, std::size(now), posMs);
@@ -741,7 +982,8 @@ void CMainWindows::DrawWaveform(HDC hdc){
     DeleteObject(penAxis);
 
     // 选数据源: 录音中看实时输入, 否则看已打开文件的整段波形
-    // (停止播放后仍然保留文件波形, 方便回看; 只是不再画播放位置竖线)
+    // (停止播放后仍然保留文件波形, 方便回看; 只是不再画播放位置竖线)。
+    // 文件波形在播放线程里被写, 这里拷一份快照再画, 不跟写入纠缠。
     const float (*data)[2] = nullptr;
     int count = 0;
     if (m_isRecording){
@@ -749,8 +991,8 @@ void CMainWindows::DrawWaveform(HDC hdc){
         count = m_recWaveCount;
     }
     else {
-        data  = m_fileWave;
-        count = m_fileWaveCount;
+        count = SnapshotFileWave(m_fileWaveSnap);
+        data  = m_fileWaveSnap;
     }
 
     if (data && count > 0){
@@ -815,7 +1057,7 @@ void CMainWindows::DrawWaveform(HDC hdc){
             swprintf_s(hint, std::size(hint), L"录音中 · 显示最近 %s", span);
         }
         else{
-            FormatMs(span, std::size(span), m_api.PlayerGetTotalPosMs(m_playerHandle));
+            FormatMs(span, std::size(span), m_playApi.PlayerGetTotalPosMs(m_playerHandle));
             swprintf_s(hint, std::size(hint), L"全长 %s", span);
         }
         SetBkMode(hdc, TRANSPARENT);
@@ -841,5 +1083,5 @@ void CMainWindows::DrawWaveform(HDC hdc){
  * @return false 未加载
  */
 bool CMainWindows::SdkReady() const{
-    return m_api.hModule != nullptr;
+    return m_recApi.hModule != nullptr && m_playApi.hModule != nullptr;
 }

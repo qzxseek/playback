@@ -186,7 +186,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    p->m_vecBlocks.resize(p->m_iBlockCount);
    for (auto& block : p->m_vecBlocks) block.vecData.resize(blockSize);
 
-   MMRESULT res = waveOutOpen(&p->m_hWaveOut,WAVE_MAPPED,&p->m_fmt,
+   MMRESULT res = waveOutOpen(&p->m_hWaveOut,WAVE_MAPPER,&p->m_fmt,
       (DWORD_PTR)&Impl::WaveOutProc,(DWORD_PTR)p,CALLBACK_FUNCTION);
    // 部分机器 WAVE_MAPPER 映射损坏（报 BADDEVICEID），此时退回枚举设备逐个试开，
    // 第一个接受该格式的即用

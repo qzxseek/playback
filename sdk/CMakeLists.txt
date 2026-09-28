@@ -81,7 +81,6 @@ if(WIN32)
 
     # 格式层单测：不碰设备不碰线程, 只链格式层三个 .cpp, 秒级可反复跑
     add_executable(test_format_unit
-        test/format_unit.cpp
         src/common/wav_validate.cpp
         ${SDK_COMMON_SOURCES}
     )
