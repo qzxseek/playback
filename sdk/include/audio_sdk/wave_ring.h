@@ -22,7 +22,6 @@ public:
 
     int Pop(float* outMinMax, int maxPoints);
 
-
     void Reset();
 
 private:

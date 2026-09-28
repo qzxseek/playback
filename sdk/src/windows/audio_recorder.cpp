@@ -11,8 +11,8 @@
 #include <mmeapi.h>
 #include <winuser.h>
 #include <atomic>
-#include <new>          
-#include <stdexcept>    
+#include <new>
+#include <stdexcept>
 #include <string>
 
 // ---- Windows 录音缓冲参数(本文件私有) ----
@@ -45,6 +45,9 @@ struct CAudioRecorder::Impl{
    // 跨线程读写: UI 线程置位, 音频线程在 OnBufferDone 里读 → 必须原子
    std::atomic<bool> m_isRecording{false};  // 是否正在录制
    std::atomic<bool> m_oom{false};
+
+   std::atomic<int> m_cbInFlight{0};     // 正在回调里跑的线程数
+   std::atomic<int> m_bufsInDriver{0};   // 已挂给驱动、还没退回来的缓冲数
    bool      m_isPaused    = false;      // 是否正在暂停录制
    bool      m_isAencEncrypt = true;     // 是否加密保存(默认加密)
    
@@ -79,13 +82,29 @@ CAudioRecorder::~CAudioRecorder(){
  */
 void CAudioRecorder::Impl::AbortStart(){
    if (m_hWaveIn == NULL) return;
-   waveInReset(m_hWaveIn);
-   for (int iN = 0; iN < kBufferCount; iN++) {
-      if (m_waveHdrIn[iN].lpData == nullptr) continue;
-      waveInUnprepareHeader(m_hWaveIn, &m_waveHdrIn[iN], sizeof(WAVEHDR));
-      delete[] m_waveHdrIn[iN].lpData;
-      m_waveHdrIn[iN].lpData = nullptr;
+   m_isRecording = false;
+
+   waveInReset(m_hWaveIn);        // 停采 + 让驱动把在途缓冲全部退回来
+
+   // 等回调跑完再动缓冲
+   for (int spin = 0; spin < 1000; spin++) {
+      if (m_cbInFlight.load(std::memory_order_acquire) == 0 &&
+          m_bufsInDriver.load(std::memory_order_acquire) == 0)
+         break;
+      Sleep(1);                   // 回调只做几次拷贝, 通常等不到这一下
    }
+
+   for (int iN = 0; iN < kBufferCount; iN++) {
+      WAVEHDR& hdr = m_waveHdrIn[iN];
+      if (hdr.lpData == nullptr) continue;
+      if (waveInUnprepareHeader(m_hWaveIn, &hdr, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
+         hdr.lpData = nullptr;    // 拿不回来就只摘指针不 free(兜底路径)
+         continue;
+      }
+      delete[] hdr.lpData;
+      hdr.lpData = nullptr;
+   }
+
    waveInClose(m_hWaveIn);
    m_hWaveIn = NULL;
 }
@@ -104,6 +123,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
    fmt.nBlockAlign = CHANNELS * (BITS_PER_SAMPLE / 8);
    fmt.wBitsPerSample = BITS_PER_SAMPLE;
    fmt.nAvgBytesPerSec = fmt.nSamplesPerSec * fmt.nBlockAlign;
+
+   if (p->m_isRecording.load()) return AudioSdk::AudioSdkState::DEVICE_BUSY;
 
    MMRESULT res = waveInOpen(&p->m_hWaveIn, WAVE_MAPPER,
       &fmt, (DWORD_PTR)&Impl::WaveInProc,
@@ -154,6 +175,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
          return (add == MMSYSERR_NOMEM) ? AudioSdk::AudioSdkState::OUT_OF_MEMORY
                                         : AudioSdk::AudioSdkState::PLATFORM_ERROR;
       }
+      // 真正进了驱动队列才记账 —— 收尾时靠它判断"还有没有回调会来"
+      p->m_bufsInDriver.fetch_add(1, std::memory_order_release);
    }
 
    const MMRESULT start = waveInStart(p->m_hWaveIn);
@@ -196,7 +219,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
    p->m_isRecording = false;
    p->m_isPaused = false;
    p->AbortStart();                // 收回缓冲 + 关设备(内部会先 reset)
-
+   p->m_vecRecData.clear();
    // 波形环里的点不清: 设备已静默, 但调用方可能还没来得及取最后一块。
    // 留着让它在 Stop 之后仍能取到尾巴(下一次 StartRecording 会 Reset)。
 
@@ -218,8 +241,13 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
  */
 void CALLBACK CAudioRecorder::Impl::WaveInProc(HWAVEIN hWaveIn, UINT uMsg, DWORD_PTR dwInstanceData,
    DWORD_PTR wParam, DWORD_PTR lParam) {
-   if (uMsg == WIM_DATA)     // 系统预定义常量(0x3C4)，录满一个缓冲区时来一次
-      reinterpret_cast<Impl*>(dwInstanceData)->OnBufferDone((WAVEHDR*)wParam);
+   if (uMsg != WIM_DATA)     // 系统预定义常量(0x3C4)，录满一个缓冲区时来一次
+      return;
+   Impl* self = reinterpret_cast<Impl*>(dwInstanceData);
+   self->m_cbInFlight.fetch_add(1, std::memory_order_acq_rel);
+   self->m_bufsInDriver.fetch_sub(1, std::memory_order_acq_rel);
+   self->OnBufferDone((WAVEHDR*)wParam);
+   self->m_cbInFlight.fetch_sub(1, std::memory_order_acq_rel);
 }
 
 /**
@@ -239,9 +267,14 @@ void CAudioRecorder::Impl::OnBufferDone(WAVEHDR* hdr) {
       // 拷进环里就结束 —— 这一行不调用任何调用方代码, 音频线程上是干净的
       m_waveRing.Push(m_waveBuf, CWaveform::kPointsPerBlock);
    }
-
+   
    // 复制数据到录制数据向量
    try {
+      if (m_vecRecData.capacity() - m_vecRecData.size() < hdr->dwBytesRecorded){
+         size_t newCap = m_vecRecData.capacity()
+                       + hdr->dwBytesRecorded;
+         m_vecRecData.reserve(newCap);
+      } 
       m_vecRecData.insert(m_vecRecData.end(), reinterpret_cast<BYTE*>(hdr->lpData),
       reinterpret_cast<BYTE*> (hdr->lpData) + hdr->dwBytesRecorded);
    } catch (const std::bad_alloc&) {
@@ -253,8 +286,11 @@ void CAudioRecorder::Impl::OnBufferDone(WAVEHDR* hdr) {
    }
    m_recordedBytes.store(m_vecRecData.size(), std::memory_order_relaxed);
    // 续缓冲前多看一眼 m_oom: 已经内存不够了, 再采下去也只会继续失败
-   if (m_isRecording.load(std::memory_order_acquire) && !m_oom.load(std::memory_order_relaxed))
-      waveInAddBuffer(m_hWaveIn, hdr, sizeof(WAVEHDR));
+   if (m_isRecording.load(std::memory_order_acquire) && !m_oom.load(std::memory_order_relaxed)) {
+      // 挂回去了才记账; 挂失败就等于这块退休, 计数不能凭空加回去
+      if (waveInAddBuffer(m_hWaveIn, hdr, sizeof(WAVEHDR)) == MMSYSERR_NOERROR)
+         m_bufsInDriver.fetch_add(1, std::memory_order_release);
+   }
 }
 
 /**

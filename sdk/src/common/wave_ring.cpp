@@ -1,4 +1,5 @@
 #include "audio_sdk/wave_ring.h"
+#include <cassert>
 /**
  * @brief 推入一批峰值点。minmax 布局 [min0,max0,min1,max1,...], 共 points*2 个 float。
  * @param minmax 峰值点缓冲, 布局 [min0,max0,min1,max1,...], 共 points*2 个 float
@@ -7,14 +8,14 @@
 void CWaveRing::Push(const float* minmax, int points){
         if (!minmax || points <= 0) return;
 
-        // 一次推来的比整个环还大: 只留最后 kCapacity 个。
-        // (下标本来就取模, 不这样处理也不会越界, 但前面的点会被自己盖掉, 白拷一遍)
+        // 一次推来的比整个环还大: 只留最后 kCapacity 个
         if (points > static_cast<int>(kCapacity)){
             minmax += (points - static_cast<int>(kCapacity)) * 2;
             points  = static_cast<int>(kCapacity);
         }
 
         unsigned total = m_total.load(std::memory_order_relaxed);
+        if (total < m_read) assert("播放音波图错误");
         for (int i = 0; i < points; ++i){
             float* slot = m_slot[total % kCapacity];
             slot[0] = minmax[i * 2];        // min
@@ -35,9 +36,7 @@ int CWaveRing::Pop(float* outMinMax, int maxPoints){
     if (!outMinMax || maxPoints <= 0) return 0;
 
     const unsigned total = m_total.load(std::memory_order_acquire);
-    // 两支游标都是单调递增的, 差值天然就是"没读过的点数"。
-    // 这里不用取模游标: (写-读+容量)%容量 在写方正好绕满一圈时得到 0,
-    // 会把"环满"误判成"无数据"; 单调计数没有这个歧义。
+    
     unsigned avail = total - m_read;
     if (avail == 0) return 0;
 

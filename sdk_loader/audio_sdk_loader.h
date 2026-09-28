@@ -4,7 +4,7 @@
 */
 #pragma once
 
-#include "audio_sdk/audio_c_api.h"   // 契约: 25 个 AudioSdk_* 声明(下面 decltype 要用)
+#include "audio_sdk/audio_c_api.h"   // 契约: 24 个 AudioSdk_* 声明(下面 decltype 要用)
 
 // 平台原语, 按宏选具体文件。路径写 "platform/xxx" 而不是裸 "xxx": 本文件就在
 // sdk_loader 根下, 引号 include 会先搜本文件所在目录 —— 写裸文件名会引到【自己】,

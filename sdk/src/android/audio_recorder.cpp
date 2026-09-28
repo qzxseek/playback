@@ -164,7 +164,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
         AAudioStream_close(p->m_stream);
         p->m_stream = nullptr;
     }
-
+    p->m_vecPcmData.clear();
     // 流已关闭, 音频线程不会再碰任何缓冲了
     p->m_waveAccumCount = 0;
     // 环形缓冲里的点不清: 调用方可能还没来得及取最后一块, 留着让它在 Stop 之后
@@ -205,6 +205,9 @@ void CAudioRecorder::Impl::ErrorCallback(
 
 /**
  * @brief 数据回调实现: 音频线程, 只做内存拷贝
+ * @param audioData 音频数据指针
+ * @param numFrames 帧数
+ * @return aaudio_data_callback_result_t 回调结果
  */
 aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
         void* audioData, int32_t numFrames) {
@@ -240,6 +243,11 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
     // 保持为 true, StopRecording 仍会把它落盘, 而不是把用户录的东西丢掉。
     // vector 只会抛这两种, 不必写 catch (...) 把不相干的异常也咽掉。
     try {
+        if (m_vecPcmData.capacity() - m_vecPcmData.size() < bytes){
+         size_t newCap = m_vecPcmData.capacity()
+                       + bytes;
+         m_vecPcmData.reserve(newCap);
+        } 
         m_vecPcmData.insert(m_vecPcmData.end(), pcm, pcm + bytes);
     } catch (const std::bad_alloc&) {
         m_oom.store(true, std::memory_order_relaxed);

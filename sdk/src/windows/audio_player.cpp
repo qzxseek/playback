@@ -52,11 +52,7 @@ struct CAudioPlayer::Impl
     static const int m_iBlockCount = 4;      // 缓冲池块数
 
     HWAVEOUT  m_hWaveOut  = NULL;
-    // 跨线程读写: 播放线程在 FeedLoop 里置 false, UI 线程在 Stop/Seek/Pause/IsPlaying 里读
-    //   → 必须原子。UI 侧的读都没进锁, 所以光把写挪进临界区没有用(锁只在持锁者之间建立顺序)。
-    // relaxed 够用: 它是个独立的开关量, 没有"和它配套被读的其它数据";
-    //   真正需要顺序的地方另有保障 —— StopPlay 靠 WaitForSingleObject(线程退出),
-    //   Seek 靠紧随其后的 EnterCriticalSection。
+  
     std::atomic<bool> m_isPlaying{false};    // 是否正在播放
     bool      m_isPaused  = false;           // 是否暂停(仅 UI 线程碰, 无需原子)
 
@@ -197,13 +193,24 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
          res = waveOutOpen(&p->m_hWaveOut,id,&p->m_fmt,
             (DWORD_PTR)&Impl::WaveOutProc,(DWORD_PTR)p,CALLBACK_FUNCTION);
    }
-   if (res == WAVERR_BADFORMAT)
+   if (res == WAVERR_BADFORMAT){
+      p->m_vecPcm.clear();
+      p->m_dataSize = 0;
+      p->m_fmt = {};
       return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;   // 所有设备都不支持该格式
-   else if (res == MMSYSERR_ALLOCATED)
+   }
+   else if (res == MMSYSERR_ALLOCATED){
+      p->m_vecPcm.clear();
+      p->m_dataSize = 0;
+      p->m_fmt = {};
       return AudioSdk::AudioSdkState::DEVICE_BUSY;   // 设备已被占用
-   else if (res != MMSYSERR_NOERROR)
+   }
+   else if (res != MMSYSERR_NOERROR){
+      p->m_vecPcm.clear();
+      p->m_dataSize = 0;
+      p->m_fmt = {};
       return AudioSdk::AudioSdkState::DEVICE_NOT_FOUND;   // 设备无法打开
-
+   }
    InitializeCriticalSection(&p->m_cs);       // 初始化临界区，用于保护缓冲区访问
    p->m_csInit = true;
    p->m_hWakeEvent = CreateEvent(NULL, FALSE, FALSE,NULL);
@@ -313,19 +320,22 @@ void CAudioPlayer::Impl::CleanUpDevice(){
       for(auto& block : m_vecBlocks)
          if (block.waveHdr.dwFlags & WHDR_PREPARED)
             waveOutUnprepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
-
+      m_vecPcm.clear();
       waveOutClose(m_hWaveOut);
       m_hWaveOut = NULL;
    }
    if (m_hWakeEvent) {
+      m_vecPcm.clear();
       CloseHandle(m_hWakeEvent);
       m_hWakeEvent = NULL;
    }
    if (m_hStopEvent) {
+      m_vecPcm.clear();
       CloseHandle(m_hStopEvent);
       m_hStopEvent = NULL;
    }
    if (m_csInit){
+      m_vecPcm.clear();
       DeleteCriticalSection(&m_cs);
       m_csInit = false;
    }
