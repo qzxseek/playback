@@ -15,6 +15,7 @@
 
 #include <windows.h>
 #include <dbghelp.h>        // MiniDumpWriteDump
+#include <strsafe.h>        // StringCchPrintfW —— 带长度上限, 替掉无界的 wsprintfW
 #include <exception>        // std::set_terminate
 
 #pragma comment(lib, "dbghelp.lib")     // 直接用系统的 dbghelp, 不动态加载(见文件顶说明)
@@ -36,8 +37,12 @@ void WriteDump(EXCEPTION_POINTERS* info) {
     ::GetLocalTime(&t);                             // 不分配内存
 
     wchar_t path[MAX_PATH + 64] = {};
-    ::wsprintfW(path, L"%s\\crash_%04d%02d%02d_%02d%02d%02d.dmp",
-                g_dir, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+    HRESULT hr = ::StringCchPrintfW(path, _countof(path),
+                                    L"%s\\crash_%04d%02d%02d_%02d%02d%02d.dmp",
+                                    g_dir, t.wYear, t.wMonth, t.wDay,
+                                    t.wHour, t.wMinute, t.wSecond);
+
+    if (FAILED(hr)) return;                         // 装不下就不落盘, 不硬写
 
     HANDLE f = ::CreateFileW(path, GENERIC_WRITE, 0, nullptr,
                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
