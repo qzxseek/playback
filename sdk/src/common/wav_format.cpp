@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <new>      // std::bad_alloc
@@ -85,6 +86,10 @@ AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const char* filePath, const void
         file.close();
     } catch (const std::bad_alloc&) {
         return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
+    } catch (const std::filesystem::filesystem_error&) {
+        return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
+    } catch (std::exception&) {
+        return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;
     }
     return AudioSdk::AudioSdkState::NONE;
 }

@@ -37,12 +37,13 @@ AUDIO_API void AudioSdk_PlayerDestroy(void* handle) {
 }
 
 AUDIO_API int AudioSdk_IsAencFile(const char* utf8Path) {
+    if (utf8Path == nullptr) return static_cast<int>(AudioSdk::AudioSdkState::INVALID_PARAMETER);
     return CEncryptedFormat::IsAencFile(utf8Path) ? 1 : 0;
 }
 
 // 打开并播放 .wav/.aenc(UTF-8 路径); 返回 AudioSdkState 的序号
 AUDIO_API int AudioSdk_PlayerPlayFile(void* handle, const char* utf8Path) {
-    if (handle == nullptr)
+    if (handle == nullptr || utf8Path == nullptr)
         return static_cast<int>(AudioSdk::AudioSdkState::INVALID_PARAMETER);
     return static_cast<int>(AsPlayer(handle)->PlayWavFile(utf8Path));
 }

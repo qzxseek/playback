@@ -268,6 +268,7 @@ void CAudioRecorder::Impl::OnBufferDone(WAVEHDR* hdr) {
       m_waveRing.Push(m_waveBuf, CWaveform::kPointsPerBlock);
    }
    
+   if (!m_isRecording.load(std::memory_order_acquire)) return;
    // 复制数据到录制数据向量
    try {
       if (m_vecRecData.capacity() - m_vecRecData.size() < hdr->dwBytesRecorded){

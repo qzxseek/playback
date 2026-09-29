@@ -23,6 +23,7 @@ static std::string WideToUtf8(const std::wstring& wide)
         return {};
     std::string utf8(static_cast<size_t>(len) - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &utf8[0], len, nullptr, nullptr);
+    utf8.resize(static_cast<size_t>(len) - 1); 
     return utf8;
 }
 
@@ -36,6 +37,7 @@ static std::wstring Utf8ToWide(const char* utf8)
         return {};
     std::wstring wide(static_cast<size_t>(len) - 1, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, utf8, -1, &wide[0], len);
+    wide.resize(static_cast<size_t>(len) - 1); 
     return wide;
 }
 

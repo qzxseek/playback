@@ -182,9 +182,7 @@ aaudio_data_callback_result_t CAudioPlayer::Impl::DataCallback(
 */
 void CAudioPlayer::Impl::ErrorCallback(
         AAudioStream* stream, void* userData, aaudio_result_t error) {
-    auto* p = reinterpret_cast<Impl*>(userData);
-    // 设备被拔 / 出错: 只请求停止, 不在回调线程里 close(由 StopPlay 兜底关闭)
-    if (error == AAUDIO_ERROR_DISCONNECTED && p->m_stream)
+    if (error == AAUDIO_ERROR_DISCONNECTED && stream)
         AAudioStream_requestStop(stream);
 }
 

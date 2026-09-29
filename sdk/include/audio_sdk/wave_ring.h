@@ -29,5 +29,5 @@ private:
 
     float m_slot[kCapacity][2] = {};    // [i][0]=min, [i][1]=max
     std::atomic<unsigned> m_total{0};   // 音频线程写: 累计推入的点数(单调递增)
-    unsigned m_read = 0;                // 调用线程写: 累计取走的点数(单调递增)
+    std::atomic<unsigned> m_read{0};                // 调用线程写: 累计取走的点数(单调递增)
 };

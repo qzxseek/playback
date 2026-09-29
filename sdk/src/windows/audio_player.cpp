@@ -304,8 +304,10 @@ bool CAudioPlayer::Impl::PreparePlay(){
       block.waveHdr.dwBufferLength = szData;
       block.isDevice = true;
 
-      waveOutPrepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));  // 打开缓冲区
-      waveOutWrite(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
+      auto res = waveOutPrepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));  // 打开缓冲区
+      if (res != MMSYSERR_NOERROR) return false;
+      res = waveOutWrite(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
+      if (res != MMSYSERR_NOERROR) return false;
       return true;
    }
    return false;

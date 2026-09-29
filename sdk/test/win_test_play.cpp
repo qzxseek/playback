@@ -194,7 +194,11 @@ int main(int argc, char* argv[])
                 static_cast<unsigned long>(player.GetTotalPos()));
 
     if (!WaitFinish(player, 15000))
+    {
+        std::printf("[error] playback timeout after 15000 ms\n");
+        player.StopPlay();
         return 1;
+    }
     std::printf("[info] playback finished, final pos %lu / %lu\n",
                 static_cast<unsigned long>(player.GetPlayPos()),
                 static_cast<unsigned long>(player.GetTotalPos()));
@@ -252,7 +256,11 @@ int main(int argc, char* argv[])
         return 1;
     }
     if (!WaitFinish(player, 15000))
+    {
+        std::printf("[error] playback timeout after 15000 ms\n");
+        player.StopPlay();
         return 1;
+    }
     player.StopPlay();
     std::printf("[ok] case 3 (play encrypted .aenc) passed\n");
 
