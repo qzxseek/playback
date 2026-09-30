@@ -6,7 +6,8 @@
 #include "audio_sdk/wav_validate.h"
 #include "audio_sdk/wav_format.h"
 #include "audio_sdk/encrypted_format.h"
-#include "audio_sdk/waveform.h"      
+#include "audio_sdk/waveform.h"
+#include "audio_sdk/logging.h"
 
 #include <windows.h>     // 之前靠 audio_types.h 传递进来; 必须排在 synchapi/mmeapi 前面
 #include <synchapi.h>
@@ -18,6 +19,8 @@
 #include <vector>
 #include <cstdio>
 #include <string>
+
+static constexpr const char* kTag = "player";   // 日志来源标记
 
 /**
  * @brief UTF-8 → 宽字符(Windows 路径用宽字符打开才不会中文乱码)
@@ -109,8 +112,10 @@ void CALLBACK CAudioPlayer::Impl::WaveOutProc(HWAVEOUT hWaveOut,
 */
 AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    // 文件路径出错
-   if (!utf8Path)
+   if (!utf8Path) {
+      AUDIO_LOG_ERROR(kTag, "PlayWavFile 路径为 NULL -> INVALID_PARAMETER");
       return AudioSdk::AudioSdkState::INVALID_PARAMETER;
+   }
 
    // 先清掉上一次(若还在播)
    StopPlay();
@@ -119,19 +124,25 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    // 读取文件(UTF-8 → 宽, Windows 下宽路径打开不乱码)
    const std::wstring widePath = Utf8ToWide(utf8Path);
    std::ifstream file(widePath, std::ios::in | std::ios::binary);
-   if (!file.is_open())
+   if (!file.is_open()) {
+      AUDIO_LOG_ERROR(kTag, "打开失败 path=\"%s\" -> FILE_OPEN_FAILED", utf8Path);
       return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;   // 打开文件失败
+   }
 
    // 整个文件读进内存：播放需要整段 PCM 持续存活到播完，内存缓冲最稳
    file.seekg(0, std::ios::end);
    const std::streamsize lFileSize = file.tellg();
    if (lFileSize < 4){
+      AUDIO_LOG_ERROR(kTag, "文件只有 %lld 字节, 魔数都放不下 path=\"%s\" -> FORMAT_NOT_SUPPORTED",
+                      static_cast<long long>(lFileSize), utf8Path);
       return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;   // 文件太小，连魔数都放不下
    }
    file.seekg(0, std::ios::beg);
    std::vector<uint8_t> vecBuf(static_cast<size_t>(lFileSize));
-   if (!file.read(reinterpret_cast<char*>(vecBuf.data()), lFileSize))
+   if (!file.read(reinterpret_cast<char*>(vecBuf.data()), lFileSize)) {
+      AUDIO_LOG_ERROR(kTag, "读取失败 path=\"%s\" -> FILE_READ_FAILED", utf8Path);
       return AudioSdk::AudioSdkState::FILE_READ_FAILED;   // 读取失败（文件被截断等）
+   }
 
    WavValidate validator;
    const WavHeader* pHdr = nullptr;
@@ -139,12 +150,17 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    size_t payloadOffset = 0;
 
    if (CEncryptedFormat::IsAencData(vecBuf.data(), vecBuf.size())){
-      if (vecBuf.size() < CEncryptedFormat::kAencPrefixSize + sizeof(WavHeader))
+      if (vecBuf.size() < CEncryptedFormat::kAencPrefixSize + sizeof(WavHeader)) {
+         AUDIO_LOG_ERROR(kTag, "AENC 容器残缺(%zu 字节, 装不下前缀+头) path=\"%s\" -> FORMAT_NOT_SUPPORTED",
+                         vecBuf.size(), utf8Path);
          return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;   // 头都不完整
+      }
       // 剥掉 6 字节前缀后校验；内部 WAV 头自洽（riffSize 等按 44 头算）
       if (!validator.Validate(vecBuf.data() + CEncryptedFormat::kAencPrefixSize,
-                              vecBuf.size() - CEncryptedFormat::kAencPrefixSize))
+                              vecBuf.size() - CEncryptedFormat::kAencPrefixSize)) {
+         AUDIO_LOG_ERROR(kTag, "AENC 内层 WAV 头不合法 path=\"%s\" -> FORMAT_NOT_SUPPORTED", utf8Path);
          return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;       // 内部 WAV 头不合法
+      }
       pHdr         = &validator.Header();
       bEncrypted   = true;
       // 数据偏移由校验器给出: 标准排布是 44, fmt 后夹了 LIST 等子块时是真实位置
@@ -152,13 +168,17 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    }
    else if (vecBuf.size() >= sizeof(WavHeader) &&
             std::memcmp(vecBuf.data(), "RIFF", 4) == 0){
-      if (!validator.Validate(vecBuf.data(), vecBuf.size()))
+      if (!validator.Validate(vecBuf.data(), vecBuf.size())) {
+         AUDIO_LOG_ERROR(kTag, "WAV 头校验不过 path=\"%s\" -> FORMAT_NOT_SUPPORTED", utf8Path);
          return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;          // 不是合法的 PCM WAV 文件
+      }
       pHdr          = &validator.Header();
       payloadOffset = validator.GetDataOffset();
    }
-   else
+   else {
+      AUDIO_LOG_ERROR(kTag, "既非 AENC 也非 RIFF path=\"%s\" -> FORMAT_NOT_SUPPORTED", utf8Path);
       return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;             // 不是认识的音频格式
+   }
 
    // 数据区：明文直接取；加密容器整段 XOR 解回明文（XOR 等长，长度不变）。
    // 按 data 块的真实偏移+长度取 —— data 后面可以再垫 LIST/ID3 等尾块,
@@ -197,18 +217,25 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
             (DWORD_PTR)&Impl::WaveOutProc,(DWORD_PTR)p,CALLBACK_FUNCTION);
    }
    if (res == WAVERR_BADFORMAT){
+      AUDIO_LOG_ERROR(kTag, "waveOutOpen 无设备支持该格式 %uch %uHz %ubit (MMRESULT=%u) -> FORMAT_NOT_SUPPORTED",
+                      pHdr->numChannels, pHdr->sampleRate, pHdr->bitsPerSample,
+                      static_cast<unsigned>(res));
       p->m_vecPcm.clear();
       p->m_dataSize = 0;
       p->m_fmt = {};
       return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;   // 所有设备都不支持该格式
    }
    else if (res == MMSYSERR_ALLOCATED){
+      AUDIO_LOG_ERROR(kTag, "waveOutOpen 设备已被占用 (MMRESULT=%u) -> DEVICE_BUSY",
+                      static_cast<unsigned>(res));
       p->m_vecPcm.clear();
       p->m_dataSize = 0;
       p->m_fmt = {};
       return AudioSdk::AudioSdkState::DEVICE_BUSY;   // 设备已被占用
    }
    else if (res != MMSYSERR_NOERROR){
+      AUDIO_LOG_ERROR(kTag, "waveOutOpen 失败, 枚举 %u 个设备都没开起来 (MMRESULT=%u) -> DEVICE_NOT_FOUND",
+                      static_cast<unsigned>(waveOutGetNumDevs()), static_cast<unsigned>(res));
       p->m_vecPcm.clear();
       p->m_dataSize = 0;
       p->m_fmt = {};
@@ -220,6 +247,8 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    p->m_hStopEvent = CreateEvent(NULL, TRUE, FALSE,NULL);
    // 事件建失败(极少, 一般是句柄耗尽)就整体回滚, 不能带着空句柄往下走:
    if (p->m_hWakeEvent == NULL || p->m_hStopEvent == NULL) {
+      AUDIO_LOG_ERROR(kTag, "CreateEvent 失败 (Win32=%lu, 多半是句柄耗尽) -> UNKNOWN_ERROR",
+                      ::GetLastError());
       p->CleanUpDevice();
       return AudioSdk::AudioSdkState::UNKNOWN_ERROR;
    }
@@ -232,10 +261,20 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
       return 0;
    },p,0,NULL);
    if (p->m_hThread == NULL) {                // 线程没起来, 状态和设备都回滚
+      AUDIO_LOG_ERROR(kTag, "CreateThread 失败 (Win32=%lu) -> UNKNOWN_ERROR", ::GetLastError());
       p->m_isPlaying.store(false, std::memory_order_relaxed);
       p->CleanUpDevice();
       return AudioSdk::AudioSdkState::UNKNOWN_ERROR;
    }
+
+   // 成功: 记"播的是哪个文件 + 什么格式"。要回答的是"当时放的是不是我以为的那个" ——
+   // 路径给这个答案, 格式和时长给"内容有没有被截断/是不是变样了"
+   const uint32_t byteRate = p->m_fmt.nAvgBytesPerSec;
+   AUDIO_LOG_INFO(kTag, "开始播放 path=\"%s\" %s %uch %uHz %ubit %.2fs (%zu 字节)",
+                  utf8Path, bEncrypted ? "加密" : "明文",
+                  pHdr->numChannels, pHdr->sampleRate, pHdr->bitsPerSample,
+                  byteRate ? static_cast<double>(p->m_dataSize) / byteRate : 0.0,
+                  p->m_dataSize);
    return AudioSdk::AudioSdkState::NONE;
 }
 
@@ -353,11 +392,15 @@ void CAudioPlayer::Impl::CleanUpDevice(){
 */
 AudioSdk::AudioSdkState CAudioPlayer::Seek(uint32_t posBytes){
    Impl* p = m_impl;
-   if (!p->m_isPlaying.load(std::memory_order_relaxed)) return AudioSdk::AudioSdkState::INVALID_PARAMETER;
+   if (!p->m_isPlaying.load(std::memory_order_relaxed)) {
+      AUDIO_LOG_WARN(kTag, "Seek(%u) 但没在播 -> INVALID_PARAMETER", posBytes);
+      return AudioSdk::AudioSdkState::INVALID_PARAMETER;
+   }
 
    auto align = p->m_fmt.nBlockAlign;
    if (align) posBytes -= posBytes % align;        // 帧对齐
    if (posBytes >= p->m_dataSize) posBytes = (uint32_t)p->m_dataSize;
+   AUDIO_LOG_INFO(kTag, "跳转位置 -> %u 字节 (%u ms)", posBytes, GetPlayPosMs());
 
    waveOutPause(p->m_hWaveOut);          // 暂停播放
    EnterCriticalSection(&p->m_cs);
@@ -388,6 +431,7 @@ void CAudioPlayer::PausePlay(){             // 暂停播放
    if (p->m_isPaused || !p->m_isPlaying.load(std::memory_order_relaxed)) return;
    waveOutPause(p->m_hWaveOut);
    p->m_isPaused = true;
+   AUDIO_LOG_INFO(kTag, "暂停于 %u ms", GetPlayPosMs());
 }
 
 /**
@@ -398,6 +442,7 @@ void CAudioPlayer::ResumePlay(){             // 继续播放
    if (!p->m_isPaused || !p->m_isPlaying.load(std::memory_order_relaxed)) return;
    waveOutRestart(p->m_hWaveOut);
    p->m_isPaused = false;
+   AUDIO_LOG_INFO(kTag, "继续于 %u ms", GetPlayPosMs());
 }
 
 /**
@@ -416,6 +461,8 @@ void CAudioPlayer::StopPlay(){             // 停止播放
       return;
    }
    
+   AUDIO_LOG_INFO(kTag, "停止于 %u ms / 共 %u ms", GetPlayPosMs(), GetTotalPosMs());
+
    if (p->m_hStopEvent)
       SetEvent(p->m_hStopEvent);
 

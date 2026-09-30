@@ -8,6 +8,7 @@
 #include "audio_sdk/wav_format.h"
 #include "audio_sdk/waveform.h"
 #include "audio_sdk/wave_ring.h"     // CWaveRing: 音频线程写、调用线程读的峰值环形缓冲
+#include "audio_sdk/logging.h"
 
 #include <aaudio/AAudio.h>
 #include <atomic>
@@ -17,6 +18,8 @@
 #include <stdexcept>    
 #include <string>
 #include <vector>
+
+static constexpr const char* kTag = "recorder";   // 日志来源标记
 
 // 单声道 16bit: 每帧 2 字节(回调给的 numFrames 是帧数)
 static constexpr int kBytesPerFrame = CHANNELS * (BITS_PER_SAMPLE / 8);
@@ -51,6 +54,8 @@ struct CAudioRecorder::Impl{
     // 同样跨线程: 音频线程分配失败时置位, StopRecording 读它决定返回什么。
     // 含义是"录的过程中内存不够过, m_vecPcmData 里的数据是残缺的"。
     std::atomic<bool> m_oom{false};
+    // 设备被拔/被抢占时由错误回调置位(音频线程)
+    std::atomic<bool> m_deviceLost{false};
 
     // ---- 波形 ----
     // 峰值环形缓冲: 音频线程写(Push), 调用线程读(Pop)。单生产者单消费者, 无锁。
@@ -78,7 +83,10 @@ CAudioRecorder::~CAudioRecorder(){
  */
 AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     Impl* p = m_impl;
-    if (p->m_isRecording.load()) return AudioSdk::AudioSdkState::NONE;
+    if (p->m_isRecording.load()) {
+        AUDIO_LOG_WARN(kTag, "重复开始录音(已在录, 已录 %u ms), 本次忽略", GetRecordedMs());
+        return AudioSdk::AudioSdkState::NONE;
+    }
 
     p->m_vecPcmData.clear();
     p->m_recordedBytes.store(0, std::memory_order_relaxed);   // 计数跟着清零
@@ -86,14 +94,21 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     // 波形从头开始: 丢掉上一轮没取走的点(此时流还没 start, 音频线程没在跑)
     p->m_waveRing.Reset();
     p->m_oom.store(false, std::memory_order_relaxed);   // 上一轮的 OOM 标记不带进这一轮
+    p->m_deviceLost.store(false, std::memory_order_relaxed);   // 掉线标记同理
     p->m_isPaused = false;
 
     AAudioStreamBuilder* builder = nullptr;
     aaudio_result_t result = AAudio_createStreamBuilder(&builder);
-    if (result == AAUDIO_ERROR_NO_MEMORY)
+    if (result == AAUDIO_ERROR_NO_MEMORY) {
+        AUDIO_LOG_ERROR(kTag, "AAudio_createStreamBuilder 内存不足 (AAudio=%d) -> OUT_OF_MEMORY",
+                        static_cast<int>(result));
         return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
-    if (result != AAUDIO_OK || !builder)
+    }
+    if (result != AAUDIO_OK || !builder) {
+        AUDIO_LOG_ERROR(kTag, "AAudio_createStreamBuilder 失败 (AAudio=%d) -> PLATFORM_ERROR",
+                        static_cast<int>(result));
         return AudioSdk::AudioSdkState::PLATFORM_ERROR;
+    }
 
     AAudioStreamBuilder_setDirection(builder, AAUDIO_DIRECTION_INPUT);   // 录音
     AAudioStreamBuilder_setFormat(builder, AAUDIO_FORMAT_PCM_I16);       // 16bit PCM
@@ -107,6 +122,11 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     result = AAudioStreamBuilder_openStream(builder, &p->m_stream);
     AAudioStreamBuilder_delete(builder);        // builder 用完立即删, 别漏
     if (result != AAUDIO_OK){
+        AUDIO_LOG_ERROR(kTag, "openStream 失败 (AAudio=%d) %uch %uHz %ubit -> %s",
+                        static_cast<int>(result), CHANNELS, SAMPLE_RATE, BITS_PER_SAMPLE,
+                        result == AAUDIO_ERROR_UNAVAILABLE ? "DEVICE_BUSY"
+                      : result == AAUDIO_ERROR_NO_MEMORY  ? "OUT_OF_MEMORY"
+                                                          : "DEVICE_NOT_FOUND");
         if (result == AAUDIO_ERROR_UNAVAILABLE)
             return AudioSdk::AudioSdkState::DEVICE_BUSY;      // 没权限 / 设备被占
         // 开流要分配内部缓冲, 这是实际会碰到的 OOM
@@ -118,6 +138,9 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
     p->m_isRecording = true; 
     result = AAudioStream_requestStart(p->m_stream);
     if (result != AAUDIO_OK){
+        AUDIO_LOG_ERROR(kTag, "requestStart 失败 (AAudio=%d, 流已开成功) -> %s",
+                        static_cast<int>(result),
+                        result == AAUDIO_ERROR_NO_MEMORY ? "OUT_OF_MEMORY" : "PLATFORM_ERROR");
         p->m_isRecording = false;    
         AAudioStream_close(p->m_stream);
         p->m_stream = nullptr;
@@ -127,6 +150,10 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
         return AudioSdk::AudioSdkState::PLATFORM_ERROR;
     }
 
+    AUDIO_LOG_INFO(kTag, "开始录音 -> \"%s%s\" (%uch %uHz %ubit %s)",
+                   p->m_outputPath.c_str(), p->m_isAencEncrypt ? ".aenc" : ".wav",
+                   CHANNELS, SAMPLE_RATE, BITS_PER_SAMPLE,
+                   p->m_isAencEncrypt ? "加密" : "明文");
     return AudioSdk::AudioSdkState::NONE;
 }
 
@@ -141,11 +168,13 @@ void CAudioRecorder::PauseResumeRecording() {
     if (p->m_isPaused) {
         AAudioStream_requestStart(p->m_stream);   // 继续采
         p->m_isPaused = false;
+        AUDIO_LOG_INFO(kTag, "继续录音 (已录 %u ms)", GetRecordedMs());
     } else {
         // 输入流常不支持真正的 pause, 用 stop 模拟: 暂停期间不回调=不攒数据
         // (和 winmm waveInStop 一样: 暂停那段时间的数据被丢弃)
         AAudioStream_requestStop(p->m_stream);
         p->m_isPaused = true;
+        AUDIO_LOG_INFO(kTag, "暂停录音 (已录 %u ms)", GetRecordedMs());
     }
 }
 
@@ -156,6 +185,9 @@ void CAudioRecorder::PauseResumeRecording() {
 AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
     Impl* p = m_impl;
     if (!p->m_isRecording.load()) return AudioSdk::AudioSdkState::NONE;
+
+    // 设备中途掉线(错误回调置的): 数据还在, 但这一轮是被打断的 —— 落完盘要如实报出去
+    const bool lost = p->m_deviceLost.exchange(false, std::memory_order_acq_rel);
 
     p->m_isRecording = false;    // 先置位: 音频线程此后不再往 UI 推波形
     p->m_isPaused = false;
@@ -173,15 +205,35 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
     // 此刻回调已停, 不会再写 m_vecPcmData, 可直接访问——这就是"先 stop 再落盘"的原因
     // 后缀在这里按加密开关补上(路径本身就是 UTF-8, 格式层收的也是 UTF-8)
     std::string outFile = p->m_outputPath + (p->m_isAencEncrypt ? ".aenc" : ".wav");
+    const size_t nBytes = p->m_vecPcmData.size();    
     const bool oom = p->m_oom.load(std::memory_order_relaxed);
     const AudioSdk::AudioSdkState saved =
         CWavFormat::SaveWavFile(outFile.c_str(), p->m_vecPcmData.data(),
                                 p->m_vecPcmData.size(), p->m_isAencEncrypt);
 
     // 落盘失败优先: 文件根本没写出来, 比"数据不完整"更严重
-    if (saved != AudioSdk::AudioSdkState::NONE) return saved;
+    if (saved != AudioSdk::AudioSdkState::NONE) {
+        AUDIO_LOG_ERROR(kTag, "落盘失败 \"%s\" (%zu 字节) -> 状态码 %d",
+                        outFile.c_str(), nBytes, static_cast<int>(saved));
+        return saved;
+    }
     // 落盘成功了, 但录的过程中内存不够过 —— 文件是残缺的, 得让调用方知道
-    return oom ? AudioSdk::AudioSdkState::OUT_OF_MEMORY : AudioSdk::AudioSdkState::NONE;
+    if (oom) {
+        AUDIO_LOG_ERROR(kTag, "落盘了但录制途中内存不够过, \"%s\" 是残缺的 -> OUT_OF_MEMORY",
+                        outFile.c_str());
+        return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
+    }
+
+    const double secs = static_cast<double>(nBytes) /
+                        (SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8));
+    if (lost) {
+        // 数据保住了, 但这一轮是被设备掉线打断的 —— 如实报, 别让调用方以为录全了
+        AUDIO_LOG_WARN(kTag, "停止录音(设备中途掉线, 数据不完整) -> \"%s\" (%zu 字节, %.2fs)",
+                       outFile.c_str(), nBytes, secs);
+        return AudioSdk::AudioSdkState::DEVICE_NOT_FOUND;
+    }
+    AUDIO_LOG_INFO(kTag, "停止录音 -> \"%s\" (%zu 字节, %.2fs)", outFile.c_str(), nBytes, secs);
+    return AudioSdk::AudioSdkState::NONE;
 }
 
 /**
@@ -200,7 +252,8 @@ void CAudioRecorder::Impl::ErrorCallback(
     auto* p = reinterpret_cast<Impl*>(userData);
     // 设备被拔 / 出错: 只请求停止, 不在回调线程里 close(由 StopRecording 兜底关闭)
     if (error == AAUDIO_ERROR_DISCONNECTED && p->m_stream){
-        p->m_isRecording = false;
+        // 只置标记, 别的不做 —— 收尾全部留给 StopRecording
+        p->m_deviceLost.store(true, std::memory_order_release);
         AAudioStream_requestStop(stream);
     }
 }
@@ -270,8 +323,12 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
  */
 void CAudioRecorder::SetAencEncrypt() {
     Impl* p = m_impl;
-    if (p->m_isRecording.load()) return;   // 录制中不许切, 和 Windows 一致
+    if (p->m_isRecording.load()) {         // 录制中不许切, 和 Windows 一致
+        AUDIO_LOG_WARN(kTag, "录制中调 SetAencEncrypt, 不生效");
+        return;
+    }
     p->m_isAencEncrypt = !p->m_isAencEncrypt;
+    AUDIO_LOG_INFO(kTag, "加密开关 -> %s", p->m_isAencEncrypt ? "开(.aenc)" : "关(.wav)");
 }
 
 /**
@@ -281,8 +338,12 @@ void CAudioRecorder::SetAencEncrypt() {
  */
 void CAudioRecorder::SetOutputPath(const char* utf8Path) {
     Impl* p = m_impl;
-    if (p->m_isRecording.load()) return;   // 录制中不生效
+    if (p->m_isRecording.load()) {         // 录制中不生效
+        AUDIO_LOG_WARN(kTag, "录制中调 SetOutputPath(\"%s\"), 不生效", utf8Path ? utf8Path : "");
+        return;
+    }
     p->m_outputPath = utf8Path;
+    AUDIO_LOG_INFO(kTag, "落盘路径 -> \"%s\"", utf8Path ? utf8Path : "");
 }
 
 bool CAudioRecorder::GetAencEncrypt() const { return m_impl->m_isAencEncrypt; }

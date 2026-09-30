@@ -624,6 +624,11 @@ void CMainWindows::OnSdkDone(UINT op, UINT lane, int state){
         if (state == static_cast<int>(AudioSdk::AudioSdkState::OUT_OF_MEMORY))
             MessageBoxW(m_hwnd, L"内存不足，录音数据不完整（已保存录到的部分）",
                         L"录音", MB_OK | MB_ICONWARNING);
+        else if (state == static_cast<int>(AudioSdk::AudioSdkState::DEVICE_NOT_FOUND))
+            // 设备中途被拔: 文件确实存下来了, 只是这一轮不完整。
+            // 说"保存失败"是误导(文件在), 说"已保存"也不对(用户会以为录全了)。
+            MessageBoxW(m_hwnd, L"录音设备被断开，数据不完整（已保存录到的部分）",
+                        L"录音", MB_OK | MB_ICONWARNING);
         else if (state != static_cast<int>(AudioSdk::AudioSdkState::NONE))
             MessageBoxW(m_hwnd, L"录音保存失败", L"录音", MB_OK | MB_ICONERROR);
         else{

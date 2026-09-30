@@ -15,6 +15,8 @@ CompileFlags:
     - -D_WINDOWS
     - -DAUDIO_SDK_BUILD
     - -IC:/Users/admin/Desktop/exam_sdk/sdk/include
+    # 日志是独立子树(logging/include/audio_sdk/logging.h), 不在 sdk/include 下
+    - -IC:/Users/admin/Desktop/exam_sdk/sdk/logging/include
     # 加载器 audio_sdk_loader.h 在 sdk_loader/ 下(app 层, 与 sdk/ 平级), main_window.h 要用
     - -IC:/Users/admin/Desktop/exam_sdk/sdk_loader
     - -isystem

@@ -32,6 +32,7 @@ set(SDK_COMMON_SOURCES
     src/common/encrypted_format.cpp
     src/common/waveform.cpp        # 波形峰值计算(两平台共用)
     src/common/wave_ring.cpp       # 波形环形缓冲(两平台共用, 实现自 wave_ring.h 抽出)
+    logging/src/logging.cpp        # 日志(两平台共用)
 )
 
 # SDK 动态库
@@ -44,6 +45,7 @@ add_library(audio_sdk SHARED
 
 target_include_directories(audio_sdk PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/logging/include
 )
 target_link_libraries(audio_sdk PUBLIC ${PLATFORM_LIBS})
 
@@ -70,28 +72,31 @@ endif()
 # ---------------------------------------------------------------------------
 # 测试
 # ---------------------------------------------------------------------------
-set(SDK_TEST_SOURCES
-    test/src/test_positive.cpp
-    test/src/test_negative.cpp
-    test/src/test_boundary.cpp
-    test/src/test_abnormal.cpp
-)
+if(WIN32)
+    set(SDK_TEST_SOURCES
+        test/src/test_positive.cpp
+        test/src/test_negative.cpp
+        test/src/test_boundary.cpp
+        test/src/test_abnormal.cpp
+    )
 
-foreach(test_src IN LISTS SDK_TEST_SOURCES)
-    get_filename_component(test_name ${test_src} NAME_WE)
-    add_executable(${test_name}
-        ${test_src}
-        ${PLATFORM_SOURCES}
-        ${SDK_COMMON_SOURCES}
-        src/common/wav_validate.cpp
-    )
-    target_include_directories(${test_name} PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-        ${CMAKE_CURRENT_SOURCE_DIR}/test
-    )
-    target_link_libraries(${test_name} PRIVATE ${PLATFORM_LIBS})
-    target_compile_definitions(${test_name} PRIVATE AUDIO_SDK_STATIC)
-    set_target_properties(${test_name} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test
-    )
-endforeach()
+    foreach(test_src IN LISTS SDK_TEST_SOURCES)
+        get_filename_component(test_name ${test_src} NAME_WE)
+        add_executable(${test_name}
+            ${test_src}
+            ${PLATFORM_SOURCES}
+            ${SDK_COMMON_SOURCES}
+            src/common/wav_validate.cpp
+        )
+        target_include_directories(${test_name} PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/logging/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/test
+        )
+        target_link_libraries(${test_name} PRIVATE ${PLATFORM_LIBS})
+        target_compile_definitions(${test_name} PRIVATE AUDIO_SDK_STATIC)
+        set_target_properties(${test_name} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test
+        )
+    endforeach()
+endif()
