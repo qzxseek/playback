@@ -53,8 +53,6 @@ void WriteDump(EXCEPTION_POINTERS* info) {
     me.ExceptionPointers = info;                    // 现场就在这个指针里
     me.ClientPointers = FALSE;                      // 同进程, 指针可以直接用
 
-    // MiniDumpNormal = 只抓线程栈和相关内存, 文件几十 KB, 够定位问题
-    // 想看"所有变量的值"可以换成 MiniDumpWithFullMemory, 但文件会涨到几百 MB
     ::MiniDumpWriteDump(::GetCurrentProcess(), ::GetCurrentProcessId(), f,
                         MiniDumpNormal, info ? &me : nullptr, nullptr, nullptr);
     ::CloseHandle(f);
