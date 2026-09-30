@@ -219,9 +219,6 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
    p->m_isRecording = false;
    p->m_isPaused = false;
    p->AbortStart();                // 收回缓冲 + 关设备(内部会先 reset)
-   p->m_vecRecData.clear();
-   // 波形环里的点不清: 设备已静默, 但调用方可能还没来得及取最后一块。
-   // 留着让它在 Stop 之后仍能取到尾巴(下一次 StartRecording 会 Reset)。
 
    // 后缀在这里按加密开关补上; 路径本身就是 UTF-8, 格式层收的也是 UTF-8, 不用再转
    const std::string outFile = p->m_outputPath + (p->m_isAencEncrypt ? ".aenc" : ".wav");
@@ -231,6 +228,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
       CWavFormat::SaveWavFile(outFile.c_str(), p->m_vecRecData.data(),
                               p->m_vecRecData.size(), p->m_isAencEncrypt);
 
+   p->m_vecRecData.clear();
    if (saved != AudioSdk::AudioSdkState::NONE) return saved;
    // 落盘成功了, 但录的过程中内存不够过 —— 文件是残缺的, 得让调用方知道
    return oom ? AudioSdk::AudioSdkState::OUT_OF_MEMORY : AudioSdk::AudioSdkState::NONE;

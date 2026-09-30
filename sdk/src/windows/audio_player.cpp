@@ -78,7 +78,10 @@ struct CAudioPlayer::Impl
 CAudioPlayer::CAudioPlayer() : m_impl(new Impl()) {}
 CAudioPlayer::~CAudioPlayer(){
     if (m_impl){
-        m_impl->CleanUpDevice();
+        // 必须走 StopPlay 而不是直接 CleanUpDevice: 播放线程可能还在跑,
+        // 只有 StopPlay 会先发停止事件、等线程退出, 再关事件/临界区/设备。
+        // 直接清理等于在它脚下抽走 m_cs 和 m_vecBlocks, 线程下一次循环就踩空。
+        StopPlay();
         delete m_impl;
         m_impl = nullptr;
     }

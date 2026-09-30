@@ -538,6 +538,7 @@ void CMainWindows::AudioStartStopRec(){
         m_recBusy = true;                          // 设备打开中, 结果回来前开始按钮置灰
         SetRecGroupEnabled(false);
         m_recLanes[m_activeLane].q.Push({Cmd::RecStart, handle});
+        m_recLaneIdx ^= 1;                             // 乒乓翻到另一条 lane(下轮用)
     }
     else{
         // ---- 停止录音 ----
@@ -562,7 +563,6 @@ void CMainWindows::AudioStartStopRec(){
         SetWindowTextW(m_hLblRecTime, L"正在保存…");
         m_recLanes[lane].q.Push({Cmd::RecStop, handle});
     }
-    m_recLaneIdx ^= 1;                             // 乒乓翻到另一条 lane(下轮用)
 }
 
 /**

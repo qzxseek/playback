@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(MSVC)
-    add_compile_options(/utf-8)
+    add_compile_options(/utf-8 /wd4819)
 endif()
 
 # 平台相关 
@@ -50,52 +50,48 @@ target_link_libraries(audio_sdk PUBLIC ${PLATFORM_LIBS})
 # 告诉 audio_export.h: 现在编的是 SDK 本体 → AUDIO_API 展开成 dllexport
 target_compile_definitions(audio_sdk PRIVATE AUDIO_SDK_BUILD)
 
-# Windows 专用自测程序(依赖 winmm 设备层, Android 下不构建) 
-if(WIN32)
-    # 录制测试：正常多 TU 链接（CAudioRecorder 类，回调走 CALLBACK_FUNCTION，无需窗口）。
-    add_executable(test_win_record
-        test/win_test_record.cpp
-        src/windows/audio_recorder.cpp
-        ${SDK_COMMON_SOURCES}
-    )
-    target_include_directories(test_win_record PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-    # 测试程序把 SDK 源码静态编进来, 既不是导入也不是导出 → AUDIO_API 置空
-    target_compile_definitions(test_win_record PRIVATE AUDIO_SDK_STATIC)
-    target_link_libraries(test_win_record PRIVATE winmm)
-
-    # 播放测试：正常多 TU 链接（CAudioPlayer 类；wav_format 提供测试音生成用的 SaveWavFile）。
-    add_executable(test_win_play
-        test/win_test_play.cpp
-        src/windows/audio_player.cpp
-        src/common/wav_validate.cpp
-        ${SDK_COMMON_SOURCES}
-    )
-    target_include_directories(test_win_play PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-    # 同上: 静态编译 SDK 源码, 不要 dllimport/dllexport
-    target_compile_definitions(test_win_play PRIVATE AUDIO_SDK_STATIC)
-    target_link_libraries(test_win_play PRIVATE winmm)
-
-    # 格式层单测：不碰设备不碰线程, 只链格式层三个 .cpp, 秒级可反复跑
-    add_executable(test_format_unit
-        src/common/wav_validate.cpp
-        ${SDK_COMMON_SOURCES}
-    )
-    target_include_directories(test_format_unit PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/include
-    )
-    target_compile_definitions(test_format_unit PRIVATE AUDIO_SDK_STATIC)
+if(MSVC)
+    target_compile_options(audio_sdk PRIVATE /Zi)
+    target_link_options(audio_sdk PRIVATE /DEBUG)
 endif()
 
-# 发布: 把 dll 拷到 windows_app/resource, 供 UI 工程(独立 CMake 工程, 显式加载)取用
 if(WIN32)
     add_custom_command(TARGET audio_sdk POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:audio_sdk>"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../windows_app/resource/audio_sdk.dll"
-        COMMENT "发布 audio_sdk.dll 到 windows_app/resource"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_PDB_FILE:audio_sdk>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../windows_app/resource/audio_sdk.pdb"
+        COMMENT "发布 audio_sdk.dll / audio_sdk.pdb 到 windows_app/resource"
     )
 endif()
+
+# ---------------------------------------------------------------------------
+# 测试
+# ---------------------------------------------------------------------------
+set(SDK_TEST_SOURCES
+    test/test_positive.cpp
+    test/test_negative.cpp
+    test/test_boundary.cpp
+    test/test_abnormal.cpp
+)
+
+foreach(test_src IN LISTS SDK_TEST_SOURCES)
+    get_filename_component(test_name ${test_src} NAME_WE)
+    add_executable(${test_name}
+        ${test_src}
+        ${PLATFORM_SOURCES}
+        ${SDK_COMMON_SOURCES}
+        src/common/wav_validate.cpp
+    )
+    target_include_directories(${test_name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test
+    )
+    target_link_libraries(${test_name} PRIVATE ${PLATFORM_LIBS})
+    target_compile_definitions(${test_name} PRIVATE AUDIO_SDK_STATIC)
+    set_target_properties(${test_name} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test
+    )
+endforeach()
