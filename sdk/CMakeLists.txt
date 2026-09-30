@@ -71,10 +71,10 @@ endif()
 # 测试
 # ---------------------------------------------------------------------------
 set(SDK_TEST_SOURCES
-    test/test_positive.cpp
-    test/test_negative.cpp
-    test/test_boundary.cpp
-    test/test_abnormal.cpp
+    test/src/test_positive.cpp
+    test/src/test_negative.cpp
+    test/src/test_boundary.cpp
+    test/src/test_abnormal.cpp
 )
 
 foreach(test_src IN LISTS SDK_TEST_SOURCES)

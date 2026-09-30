@@ -6,7 +6,7 @@
             前半(含 ExtraChunkOffsets)是格式层, 不需要任何设备, 任何机器上都跑;
             后半是录音/播放/闭环, 需要麦克风与声卡 —— 设备打不开就 [skip]。
 */
-#include "test_common.h"
+#include "../include/test_common.h"
 
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/audio_recorder.h"

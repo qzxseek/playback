@@ -6,7 +6,7 @@
 
           大部分不需要设备; 只有 Seek 那条要真的开着播放器。
 */
-#include "test_common.h"
+#include "../include/test_common.h"
 
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/audio_recorder.h"

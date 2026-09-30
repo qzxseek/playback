@@ -9,7 +9,7 @@
 
           需要设备的用例在设备不可用时 [skip]。
 */
-#include "test_common.h"
+#include "../include/test_common.h"
 
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/audio_recorder.h"

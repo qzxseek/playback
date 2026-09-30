@@ -8,7 +8,7 @@
           例外: TestBadFileViaPlayer 会真的走一遍播放器。校验在开设备之前返回,
           所以这部分不需要声卡也能跑。
 */
-#include "test_common.h"
+#include "../include/test_common.h"
 
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/encrypted_format.h"
