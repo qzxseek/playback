@@ -14,10 +14,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
-#include <new>          
-#include <stdexcept>    
 #include <string>
-#include <vector>
 
 static constexpr const char* kTag = "recorder";   // 日志来源标记
 
@@ -48,12 +45,11 @@ struct CAudioRecorder::Impl{
     bool m_isPaused      = false;
     bool m_isAencEncrypt = true;
     AAudioStream* m_stream = nullptr;
-    std::vector<uint8_t> m_vecPcmData;   // 只有音频线程写; 落盘在流关闭后读
+    CWavStreamWriter m_writer;         // 边录边写; 只有音频线程写, StopRecording 收尾
     // 已录字节数
     std::atomic<size_t> m_recordedBytes{0};
-    // 同样跨线程: 音频线程分配失败时置位, StopRecording 读它决定返回什么。
-    // 含义是"录的过程中内存不够过, m_vecPcmData 里的数据是残缺的"。
-    std::atomic<bool> m_oom{false};
+    // 存的是 AudioSdkState 状态码(0 = NONE), 含义是"录到一半就写不进去了, 文件是残缺的"。
+    std::atomic<int> m_writeErr{0};
     // 设备被拔/被抢占时由错误回调置位(音频线程)
     std::atomic<bool> m_deviceLost{false};
 
@@ -88,12 +84,11 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
         return AudioSdk::AudioSdkState::NONE;
     }
 
-    p->m_vecPcmData.clear();
     p->m_recordedBytes.store(0, std::memory_order_relaxed);   // 计数跟着清零
     p->m_waveAccumCount = 0;      // 上一轮的残留采样不带到这一轮
     // 波形从头开始: 丢掉上一轮没取走的点(此时流还没 start, 音频线程没在跑)
     p->m_waveRing.Reset();
-    p->m_oom.store(false, std::memory_order_relaxed);   // 上一轮的 OOM 标记不带进这一轮
+    p->m_writeErr.store(0, std::memory_order_relaxed);  // 上一轮的写失败标记不带进这一轮
     p->m_deviceLost.store(false, std::memory_order_relaxed);   // 掉线标记同理
     p->m_isPaused = false;
 
@@ -135,15 +130,28 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
         return AudioSdk::AudioSdkState::DEVICE_NOT_FOUND;
     }
 
-    p->m_isRecording = true; 
+    p->m_isRecording = true;
+
+    const std::string outFile = p->m_outputPath + (p->m_isAencEncrypt ? ".aenc" : ".wav");
+    const AudioSdk::AudioSdkState opened = p->m_writer.Open(outFile.c_str(), p->m_isAencEncrypt);
+    if (opened != AudioSdk::AudioSdkState::NONE) {
+        AUDIO_LOG_ERROR(kTag, "开录时打不开落盘文件 \"%s\" -> 状态码 %d",
+                        outFile.c_str(), static_cast<int>(opened));
+        p->m_isRecording = false;
+        AAudioStream_close(p->m_stream);
+        p->m_stream = nullptr;
+        return opened;
+    }
+
     result = AAudioStream_requestStart(p->m_stream);
     if (result != AAUDIO_OK){
         AUDIO_LOG_ERROR(kTag, "requestStart 失败 (AAudio=%d, 流已开成功) -> %s",
                         static_cast<int>(result),
                         result == AAUDIO_ERROR_NO_MEMORY ? "OUT_OF_MEMORY" : "PLATFORM_ERROR");
-        p->m_isRecording = false;    
+        p->m_isRecording = false;
         AAudioStream_close(p->m_stream);
         p->m_stream = nullptr;
+        p->m_writer.Finish();      // 文件已经建了(空 WAV), 关掉别留着占 fd
         // 流已经开成功了, 这里再报 DEVICE_NOT_FOUND 是不实之词
         if (result == AAUDIO_ERROR_NO_MEMORY)
             return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
@@ -163,8 +171,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
 void CAudioRecorder::PauseResumeRecording() {
     Impl* p = m_impl;
     if (!p->m_isRecording.load() || !p->m_stream) return;
-    // OOM 之后流已经被回调请求停掉了, 再 requestStart 也只会空转
-    if (p->m_oom.load()) return;
+    // 写失败之后回调已经请求停流了, 再 requestStart 也只会空转
+    if (p->m_writeErr.load(std::memory_order_relaxed) != 0) return;
     if (p->m_isPaused) {
         AAudioStream_requestStart(p->m_stream);   // 继续采
         p->m_isPaused = false;
@@ -196,32 +204,31 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
         AAudioStream_close(p->m_stream);
         p->m_stream = nullptr;
     }
-    p->m_vecPcmData.clear();
     // 流已关闭, 音频线程不会再碰任何缓冲了
     p->m_waveAccumCount = 0;
     // 环形缓冲里的点不清: 调用方可能还没来得及取最后一块, 留着让它在 Stop 之后
     // 仍能取到尾巴(下一次 StartRecording 会 Reset)
 
-    // 此刻回调已停, 不会再写 m_vecPcmData, 可直接访问——这就是"先 stop 再落盘"的原因
+    // 此刻回调已停, 不会再动 writer —— 这就是"先停流再收尾"的原因
     // 后缀在这里按加密开关补上(路径本身就是 UTF-8, 格式层收的也是 UTF-8)
-    std::string outFile = p->m_outputPath + (p->m_isAencEncrypt ? ".aenc" : ".wav");
-    const size_t nBytes = p->m_vecPcmData.size();    
-    const bool oom = p->m_oom.load(std::memory_order_relaxed);
-    const AudioSdk::AudioSdkState saved =
-        CWavFormat::SaveWavFile(outFile.c_str(), p->m_vecPcmData.data(),
-                                p->m_vecPcmData.size(), p->m_isAencEncrypt);
+    const std::string outFile = p->m_outputPath + (p->m_isAencEncrypt ? ".aenc" : ".wav");
+    const size_t nBytes = static_cast<size_t>(p->m_writer.Written());
 
-    // 落盘失败优先: 文件根本没写出来, 比"数据不完整"更严重
-    if (saved != AudioSdk::AudioSdkState::NONE) {
-        AUDIO_LOG_ERROR(kTag, "落盘失败 \"%s\" (%zu 字节) -> 状态码 %d",
-                        outFile.c_str(), nBytes, static_cast<int>(saved));
-        return saved;
+    const bool flushed = p->m_writer.Finish();         // 回填真实长度 + 关文件
+    // 录制途中的写失败在那一刻就定了, 这里只取一次结果; 取走即清
+    const int writeErr = p->m_writeErr.exchange(0, std::memory_order_acq_rel);
+
+    // 写失败优先: 数据在半路就断了, 文件是残缺的, 比"收尾没刷出去"更该先报
+    if (writeErr != 0) {
+        AUDIO_LOG_ERROR(kTag, "录制途中写失败, \"%s\" 只写到 %zu 字节 -> 状态码 %d",
+                        outFile.c_str(), nBytes, writeErr);
+        return static_cast<AudioSdk::AudioSdkState>(writeErr);
     }
-    // 落盘成功了, 但录的过程中内存不够过 —— 文件是残缺的, 得让调用方知道
-    if (oom) {
-        AUDIO_LOG_ERROR(kTag, "落盘了但录制途中内存不够过, \"%s\" 是残缺的 -> OUT_OF_MEMORY",
-                        outFile.c_str());
-        return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
+    // 数据都写进去了, 但收尾回填长度/刷缓冲失败 —— 文件头还是 0 长度, 打不开
+    if (!flushed) {
+        AUDIO_LOG_ERROR(kTag, "收尾写文件头/刷缓冲失败, \"%s\" (%zu 字节) 是残的 -> FILE_WRITE_FAILED",
+                        outFile.c_str(), nBytes);
+        return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;
     }
 
     const double secs = static_cast<double>(nBytes) /
@@ -259,7 +266,7 @@ void CAudioRecorder::Impl::ErrorCallback(
 }
 
 /**
- * @brief 数据回调实现: 音频线程, 只做内存拷贝
+ * @brief 数据回调实现: 音频线程, 算波形 + 把这块 PCM 追加进文件
  * @param audioData 音频数据指针
  * @param numFrames 帧数
  * @return aaudio_data_callback_result_t 回调结果
@@ -271,7 +278,7 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
     const size_t bytes = static_cast<size_t>(numFrames) * kBytesPerFrame;
     auto* pcm = static_cast<const uint8_t*>(audioData);
 
-    // ---- 1) 波形: 先攒够一块, 再算一次峰值写进环形缓冲 ----
+    // 波形: 先攒够一块, 再算一次峰值写进环形缓冲
     // 跑在音频线程: 只用预分配的定长缓冲, 不分配内存、不加锁、不调用调用方代码。
     // (以前这里外面套了层"注册了回调才算"的条件; 现在无论调用方取不取都往环里写,
     //  反正 Push 只是个拷贝 —— 也不用再操心注册/注销的先后。)
@@ -292,28 +299,15 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
         }
     }
 
-    // ---- 2) 录进内存 ----
-    // 【音频线程里绝不能抛异常】异常从 AAudio 的数据回调(系统 C 帧)里穿出去是未定义行为。
-    // 内存不够就认输: 记下标记并让 AAudio 停流, 已经录到的数据留着 —— m_isRecording
-    // 保持为 true, StopRecording 仍会把它落盘, 而不是把用户录的东西丢掉。
-    // vector 只会抛这两种, 不必写 catch (...) 把不相干的异常也咽掉。
-    try {
-        if (m_vecPcmData.capacity() - m_vecPcmData.size() < bytes){
-         size_t newCap = m_vecPcmData.capacity()
-                       + bytes;
-         m_vecPcmData.reserve(newCap);
-        } 
-        m_vecPcmData.insert(m_vecPcmData.end(), pcm, pcm + bytes);
-    } catch (const std::bad_alloc&) {
-        m_oom.store(true, std::memory_order_relaxed);
-        return AAUDIO_CALLBACK_RESULT_STOP;
-    } catch (const std::length_error&) {
-        m_oom.store(true, std::memory_order_relaxed);
+    // 边录边写盘
+    if (!m_writer.Write(audioData, bytes)) {
+        int iExpected = 0;
+        m_writeErr.compare_exchange_strong(iExpected,
+            static_cast<int>(AudioSdk::AudioSdkState::FILE_WRITE_FAILED),
+            std::memory_order_relaxed);
         return AAUDIO_CALLBACK_RESULT_STOP;
     }
-    // 插完再发布计数: 计数只会落后于 vector, 不会超前 —— 它只是"进度提示",
-    // 落盘用的是 vector 自己的 size, 不以它为准。单写者用 store 比 fetch_add 便宜。
-    m_recordedBytes.store(m_vecPcmData.size(), std::memory_order_relaxed);
+    m_recordedBytes.store(m_writer.Written(), std::memory_order_relaxed);
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
