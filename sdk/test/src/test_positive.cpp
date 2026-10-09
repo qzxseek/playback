@@ -11,8 +11,9 @@
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/audio_recorder.h"
 #include "audio_sdk/encrypted_format.h"
+#include "audio_sdk/wav_format.h"
 #include "audio_sdk/wav_validate.h"
-#include "audio_sdk/waveform.h"      
+#include "audio_sdk/waveform.h"
 
 #include <algorithm>   // std::min
 #include <windows.h>   // Sleep
@@ -191,6 +192,103 @@ static void TestStreamPlumbing() {
     }
     CHECK(back == std::vector<uint8_t>(pcm, pcm + pcmBytes),
           "按任意块长分块解密后拼回来 == 原明文");
+
+    // ---- 三、边录边写器: 分块写出来的文件, 必须和整份写的逐字节相同 ----
+    // 这是把录音改成流式之后唯一不能变的东西 —— 落盘格式一旦漂了, 老录音全读不回来。
+    // 容器布局(明文 [WAV头] / 加密 [AENC][ver][WAV头][XOR])与 SaveAencFile 是同一套。
+    for (int enc = 0; enc <= 1; ++enc) {
+        const bool bEnc = (enc == 1);
+        const char* tag = bEnc ? "加密" : "明文";
+        const char* ext = bEnc ? ".aenc" : ".wav";
+        const std::string pathBatch  = std::string("t_writer_batch")  + ext;
+        const std::string pathStream = std::string("t_writer_stream") + ext;
+        const size_t headBytes = (bEnc ? CEncryptedFormat::kAencPrefixSize : 0)
+                               + sizeof(WavHeader);
+
+        // 基线: 老路径 —— 整份一次写完
+        CHECK(CWavFormat::SaveWavFile(pathBatch.c_str(), pcm, pcmBytes, bEnc)
+                  == AudioSdk::AudioSdkState::NONE, "整份写(基线) 成功");
+
+        // 新路径: 边录边写。块长故意都不是 16 的倍数, 挤一挤 XOR 的密钥相位
+        {
+            CWavStreamWriter w;
+            CHECK(w.Open(pathStream.c_str(), bEnc) == AudioSdk::AudioSdkState::NONE,
+                  "流式写: Open 成功");
+
+            // 开完文件, 头就该已经在盘上 —— 不能留在流缓冲里。
+            // 攒着的话, 从外面看开录之后是个 0 字节的空文件, 像"根本没在记";
+            // 用户就是照着这个现象判断"数据还在内存里攒着"的。
+            CHECK(tst::ReadAll(pathStream).size() == headBytes,
+                  "Open 之后占位头就已经落盘(文件不是 0 字节)");
+
+            size_t pos = 0;
+            const size_t sizes[] = {40, 7, 129, 1000};
+            bool ok = true;
+            for (size_t i = 0; pos < pcmBytes; ++i) {
+                const size_t n = (std::min)(sizes[i % 4], pcmBytes - pos);
+                // Write 会就地把明文改成密文 —— 别把基线还要用的那份明文喂进去
+                std::vector<uint8_t> chunk(pcm + pos, pcm + pos + n);
+                if (!w.Write(chunk.data(), n)) { ok = false; break; }
+                pos += n;
+            }
+            CHECK(ok, "流式写: 每一块都写进去了");
+            CHECK(w.Written() == pcmBytes, "Written() == 写进去的 PCM 字节数");
+            CHECK(w.Finish(), "流式写: Finish 成功");
+            CHECK(w.Finish(), "Finish 可重复调用(析构还会再调一次)");
+        }
+
+        const std::vector<uint8_t> a = tst::ReadAll(pathBatch);
+        const std::vector<uint8_t> b = tst::ReadAll(pathStream);
+        std::printf("         %s: 整份 %zu 字节 / 流式 %zu 字节\n", tag, a.size(), b.size());
+        CHECK(!b.empty(), "流式写出来的文件非空");
+        CHECK(a.size() == b.size(), "流式与整份的文件长度一致");
+        CHECK(a == b, "流式与整份逐字节一致(容器布局没变)");
+
+        // 写出来的还得是能读回去的: 校验通过 + 解密后 == 原明文
+        if (!b.empty() && b.size() > headBytes) {
+            WavValidate v;
+            CHECK(v.Validate(b.data() + (bEnc ? CEncryptedFormat::kAencPrefixSize : 0),
+                             b.size() - (bEnc ? CEncryptedFormat::kAencPrefixSize : 0)),
+                  "流式写出来的文件能通过校验");
+            std::vector<uint8_t> plain(b.begin() + headBytes, b.end());
+            if (bEnc) CEncryptedFormat::XorCrypt(plain.data(), plain.size());
+            CHECK(plain == std::vector<uint8_t>(pcm, pcm + pcmBytes),
+                  "流式写出来的密文解回去 == 原明文");
+        }
+
+        std::remove(pathBatch.c_str());
+        std::remove(pathStream.c_str());
+    }
+
+    // ---- 四、增量落盘: Finish 之前盘上就该有东西了 ----
+    // 这条验的是"流式"本身 —— 数据是一块块写出去的, 不是攒到最后一次性倒出来。
+    // 必须写超过文件流自身缓冲的量才有意义(缓冲那是恒定的一小截, 不随录音时长涨),
+    // 所以这里单独用一个较大的负载。
+    {
+        const std::string path = "t_writer_incremental.wav";
+        std::remove(path.c_str());
+
+        std::vector<uint8_t> big(256 * 1024, 0x5A);
+        CWavStreamWriter w;
+        CHECK(w.Open(path.c_str(), false) == AudioSdk::AudioSdkState::NONE, "增量: Open 成功");
+
+        bool ok = true;
+        for (size_t off = 0; off < big.size(); off += 4096) {
+            const size_t n = (std::min)(size_t{4096}, big.size() - off);
+            if (!w.Write(big.data() + off, n)) { ok = false; break; }
+        }
+        CHECK(ok, "增量: 256KB 全部写入");
+
+        const std::vector<uint8_t> mid = tst::ReadAll(path);
+        std::printf("         Finish 前盘上已有 %zu / %zu 字节\n", mid.size(), w.Written());
+        CHECK(mid.size() >= big.size() - 64 * 1024,
+              "Finish 之前数据就陆续写到盘上了(只有一小截还在流缓冲里)");
+
+        CHECK(w.Finish(), "增量: Finish 成功");
+        const std::vector<uint8_t> done = tst::ReadAll(path);
+        CHECK(done.size() == sizeof(WavHeader) + big.size(), "增量: 收尾后长度完整");
+        std::remove(path.c_str());
+    }
 }
 
 // ===========================================================================
@@ -233,6 +331,60 @@ static void CheckWaveform(CAudioPlayer& player, const uint8_t* pcm, size_t pcmBy
         if (sink.data[i] != ref[i]) ++bad;
     std::printf("         波形逐点比对: 不一致 %d / %d\n", bad, AUDIO_SDK_WAVE_FILE_POINTS * 2);
     CHECK(bad == 0, "流式算的整文件波形与整份算的逐点一致");
+}
+
+/**
+ * @brief 边录边写: 录制途中数据就已经在文件里了(内存不随录音时长涨的根据)
+ * @note 需要麦克风。老实现是"录完才落盘", 录到一半文件根本不存在 ——
+ *       这条验的就是那个区别: 头先占位落盘, PCM 一块块追上去, 停止时才回填长度。
+ */
+static void TestRecordStreamsToDisk() {
+    const std::string base = "t_rec_stream";
+
+    CAudioRecorder rec;
+    rec.SetOutputPath(base.c_str());
+    tst::SetEncrypt(rec, true);
+    const std::string file = tst::RecFileName(base, rec);
+    std::remove(file.c_str());
+
+    const AudioSdk::AudioSdkState st = rec.StartRecording();
+    if (tst::DeviceUnavailable(st)) { tst::Skip("边录边写", "没有可用录音设备"); return; }
+    if (st != AudioSdk::AudioSdkState::NONE) { CHECK(false, "开始录音"); return; }
+
+    ::Sleep(600);                                   // 攒够几块
+
+    // ---- 停止之前: 头已经在盘上(长度占位 0), 数据一块块追在后面 ----
+    // 老实现是"录完才写", 此刻文件根本不存在。这条就是这次改动的核心断言。
+    const std::vector<uint8_t> mid = tst::ReadAll(file);
+    const size_t hdrOff = CEncryptedFormat::kAencPrefixSize;
+    CHECK(mid.size() > hdrOff + sizeof(WavHeader),
+          "停止之前数据就已经落盘了(不是攒在内存里)");
+    CHECK(rec.GetRecordedMs() >= AUDIO_SDK_BLOCK_MS, "计时器在走");
+
+    if (mid.size() > hdrOff + sizeof(WavHeader)) {
+        WavHeader midHdr{};
+        std::memcpy(&midHdr, mid.data() + hdrOff, sizeof(midHdr));
+        CHECK(midHdr.dataSize == 0, "还没停止: 头里的长度仍是占位的 0(Finish 才回填)");
+        CHECK(midHdr.sampleRate == SAMPLE_RATE, "占位头里的格式参数已经是真的");
+    }
+
+    CHECK(rec.StopRecording() == AudioSdk::AudioSdkState::NONE, "停止落盘");
+
+    // ---- 停止之后: 长度回填, 文件是完整合法的 ----
+    const std::vector<uint8_t> done = tst::ReadAll(file);
+    CHECK(done.size() >= mid.size(), "停止后文件只增不减");
+    if (done.size() > hdrOff + sizeof(WavHeader)) {
+        WavHeader finHdr{};
+        std::memcpy(&finHdr, done.data() + hdrOff, sizeof(finHdr));
+        CHECK(finHdr.dataSize == done.size() - hdrOff - sizeof(WavHeader),
+              "停止后头里的长度回填成了真实值");
+
+        WavValidate v;
+        CHECK(v.Validate(done.data() + hdrOff, done.size() - hdrOff),
+              "停止后是完整的合法 .aenc 容器");
+    }
+
+    std::remove(file.c_str());
 }
 
 /**
@@ -421,6 +573,7 @@ int main() {
     RUN(TestAencRoundTrip);
     RUN(TestExtraChunkOffsets);
     RUN(TestStreamPlumbing);
+    RUN(TestRecordStreamsToDisk);
     RUN(TestRecordPipeline);
     RUN(TestPlayWav);
     RUN(TestPlayAenc);

@@ -73,7 +73,7 @@ void CMainWindows::StopWorkers(){
  * @param self 实例指针(静态入口传 this)
  * @param lane 本线程对应的 lane 号(0/1)
  * @note 一个会话(新建对象→Start→…→Stop落盘)全部在本线程完成 ——
- *       这就是"录音器对象的 m_vecRecData 不被两条会话共用"的结构保证。
+ *       这就是"录音器的写入器(与它打开的那个文件)不被两条会话共用"的结构保证。
  *       两条 lane 互不同步, lane0 落盘时 lane1 照常开录
  */
 void CMainWindows::RecWorkerLoop(CMainWindows* self, int lane){
@@ -133,7 +133,7 @@ CMainWindows::CMainWindows(){
     // 播放链全程只有一个对象, 起来时建好
     m_playerHandle = m_playApi.PlayerCreate();
     m_playerHandles.push_back(m_playerHandle);
-    // 录音器不预建: 每次开始录音时按需新建(独立 m_vecRecData),
+    // 录音器不预建: 每次开始录音时按需新建(独立写入器, 各自开各自的文件),
     m_recorderHandle = nullptr;
 
     if (!m_playerHandle)
@@ -575,12 +575,14 @@ void CMainWindows::OnSdkDone(UINT op, UINT lane, int state){
     if (op == Cmd::RecStart){
         m_recBusy = false;
         if (state != static_cast<int>(AudioSdk::AudioSdkState::NONE)){
-            // 内存不足和"设备打不开"是两回事, 提示得分开 —— 否则用户会去查设备
-            MessageBoxW(m_hwnd,
-                        (state == static_cast<int>(AudioSdk::AudioSdkState::OUT_OF_MEMORY))
-                            ? L"内存不足，无法开始录音"
-                            : L"打开录音设备失败",
-                        L"录音", MB_OK | MB_ICONERROR);
+            const wchar_t* msg;
+            switch (static_cast<AudioSdk::AudioSdkState>(state)){
+                case AudioSdk::AudioSdkState::OUT_OF_MEMORY:     msg = L"内存不足，无法开始录音"; break;
+                case AudioSdk::AudioSdkState::FILE_OPEN_FAILED:
+                case AudioSdk::AudioSdkState::FILE_WRITE_FAILED: msg = L"无法写入录音文件，请检查输出目录"; break;
+                default:                                         msg = L"打开录音设备失败"; break;
+            }
+            MessageBoxW(m_hwnd, msg, L"录音", MB_OK | MB_ICONERROR);
             m_isRecording = false;
             m_recorderHandle = nullptr;            // 会话作废(对象仍由析构统一销毁)
         }
@@ -1054,14 +1056,16 @@ void CMainWindows::DrawWaveform(HDC hdc){
         // 缩放标注: 录音看的是"最近一小段"(滚动窗口), 播放看的是"整个文件",
         // 两者时间跨度差很多, 波形看起来自然不一样。不标出来容易让人以为
         // "同一个文件怎么长得不同" —— 其实只是缩放级别不同, 数据没差别。
-        wchar_t span[16], hint[64];
+        wchar_t span[16], elapsed[16], hint[64];
         if (m_isRecording){
-            // 窗口还没填满时, 显示的就是已经攒到的那一段;
-            // 填满之后固定为整个窗口长度(之后就是滚动, 不再变长)
-            const int shown = m_recWaveCount < REC_WAVE_POINTS ? m_recWaveCount : REC_WAVE_POINTS;
-            // 每块 100ms 产出 AUDIO_SDK_WAVE_BLOCK_POINTS 个点 → 每点 100/256 ms
-            FormatMs(span, std::size(span), (DWORD)(shown * AUDIO_SDK_BLOCK_MS / AUDIO_SDK_WAVE_BLOCK_POINTS));
-            swprintf_s(hint, std::size(hint), L"录音中 · 显示最近 %s", span);
+            // 前面那个数必须是"已录多久", 不能拿窗口宽度来充数:
+            // 窗口是 REC_WAVE_POINTS 点 = 0.8 秒, 录满 0.8 秒就顶到上限,
+            // 之后再录也不会变 —— 显示一个不动的数字, 看起来就像程序卡死了。
+            // 窗口宽度是"缩放级别", 放后面且标成窗口, 一眼能看出它不是计时器。
+            FormatMs(elapsed, std::size(elapsed), m_recApi.RecorderGetRecordedMs(m_recorderHandle));
+            FormatMs(span, std::size(span),
+                     (DWORD)(REC_WAVE_POINTS * AUDIO_SDK_BLOCK_MS / AUDIO_SDK_WAVE_BLOCK_POINTS));
+            swprintf_s(hint, std::size(hint), L"录音中 · 已录 %s / 窗口 %s", elapsed, span);
         }
         else{
             FormatMs(span, std::size(span), m_playApi.PlayerGetTotalPosMs(m_playerHandle));

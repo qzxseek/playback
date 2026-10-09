@@ -44,6 +44,112 @@ void CWavFormat::FillHeader(WavHeader& hdr, uint32_t dataSize,uint32_t sampleRat
 }
 
 /**
+ * @brief 打开文件, 先把占位头落盘
+ * @param utf8Path 输出文件路径(UTF-8)
+ * @param bEncrypt 是否存加密容器(.aenc)
+ * @return 操作状态
+ */
+AudioSdk::AudioSdkState CWavStreamWriter::Open(const char* utf8Path, bool bEncrypt){
+    Finish();                       // 上一轮没关干净就收尾
+
+    if (!utf8Path)
+        return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
+
+    try {
+        m_file.clear();             
+        m_file.open(std::filesystem::u8path(utf8Path),
+                    std::ios::out | std::ios::binary | std::ios::trunc);
+        if (!m_file.is_open())
+            return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
+
+        m_encrypt = bEncrypt;
+        m_written = 0;
+        m_headerPos = 0;
+
+        if (bEncrypt) {             // .aenc 壳: 魔数 + 版本, 排在 WAV 头前面
+            m_file.write(CEncryptedFormat::kAencMagic, CEncryptedFormat::kAencMagicSize);
+            const uint16_t version = CEncryptedFormat::kAencVersion;
+            m_file.write(reinterpret_cast<const char*>(&version), sizeof(version));
+            m_headerPos = static_cast<std::streamoff>(CEncryptedFormat::kAencPrefixSize);
+        }
+
+        WavHeader hdr;
+        CWavFormat::FillHeader(hdr, 0);   // 长度先记 0, 收尾再回填
+        m_file.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+        // 头立刻刷出去
+        m_file.flush();
+        if (!m_file.good()) {
+            m_file.close();
+            return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;
+        }
+    } catch (const std::bad_alloc&) {
+        m_file.close();
+        return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
+    } catch (const std::filesystem::filesystem_error&) {
+        m_file.close();
+        return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
+    } catch (std::exception&) {
+        m_file.close();
+        return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;
+    }
+    return AudioSdk::AudioSdkState::NONE;
+}
+
+/**
+ * @brief 追加一块 PCM(加密时就地 XOR, 不额外拷贝)
+ * @param pcm PCM 数据, 会被就地加密改写
+ * @param n 字节数
+ * @return true = 已写进文件; false = 没打开或没写进去(调用方据此停采)
+ */
+bool CWavStreamWriter::Write(void* pcm, size_t n){
+    if (!m_file.is_open())
+        return false;
+    if (n == 0)
+        return true;                // 空块不算失败(录音刚起可能给出 0 字节的块)
+
+    uint8_t* p = static_cast<uint8_t*>(pcm);
+    if (m_encrypt)
+        CEncryptedFormat::XorCrypt(p, n, static_cast<size_t>(m_written));   // 密文与整段加密等长
+
+    try {
+        m_file.write(reinterpret_cast<const char*>(p), static_cast<std::streamsize>(n));
+    } catch (const std::bad_alloc&) {
+        return false;              // 文件缓冲扩容失败(Open 后本不该再分配, 兜底)
+    }
+    if (!m_file.good())
+        return false;              // 盘满/设备出错: 不抛异常, 只能靠流状态看
+
+    m_written += n;
+    return true;
+}
+
+/**
+ * @brief 回填真实长度并关闭文件
+ * @return true = 头与尾部都落了盘; false = 文件是残的(头还是 0 长度或尾巴没刷出去)
+ */
+bool CWavStreamWriter::Finish(){
+    if (!m_file.is_open())
+        return true;                
+
+    WavHeader hdr;
+    CWavFormat::FillHeader(hdr, static_cast<uint32_t>(m_written));  
+    try {
+        m_file.seekp(m_headerPos);
+        if (m_file.good())
+            m_file.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
+    } catch (std::exception&) {
+        // 析构也会走到这儿(析构里抛 = 直接终止进程), 吞掉: 返回值已经说明文件是残的
+    }
+
+    m_file.close();                 
+    return m_file.good();           
+}
+
+CWavStreamWriter::~CWavStreamWriter(){
+    Finish();                       
+}
+
+/**
  * @brief 将一段 PCM 数据保存为文件(明文 WAV 或加密 .aenc, 由 bEncrypt 决定)
  * @param filePath 文件路径
  * @param data PCM 数据指针
@@ -61,9 +167,6 @@ AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const char* filePath, const void
     if (bEncrypt)
         return CEncryptedFormat::SaveAencFile(filePath, data, dataSize);
 
-    // 明文: u8path 把 UTF-8 路径按平台 native 编码转换(Windows→UTF-16 流), 中文路径不乱码
-    // 这一路的分配都不大(路径转换 + 流缓冲), 但本函数本来就要返回状态码, 兜住不亏 ——
-    // 它在 StopRecording 的调用栈上, 抛出去会穿出 extern "C" 边界飞到 C/Java 调用方。
     try {
         std::ofstream file(std::filesystem::u8path(filePath), std::ios::out | std::ios::binary);
         if (!file.is_open())

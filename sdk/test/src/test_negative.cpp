@@ -12,6 +12,7 @@
 
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/encrypted_format.h"
+#include "audio_sdk/wav_format.h"
 #include "audio_sdk/wav_validate.h"
 
 // ===========================================================================
@@ -397,6 +398,56 @@ static void TestSaveToUnwritablePath() {
           "路径为 NULL → FILE_OPEN_FAILED");
 }
 
+/**
+ * @brief 边录边写器: 没起来/起不来的那些情形, 状态要如实, 不能假装写成功了
+ * @note 音频线程只看 Write 的 bool 来决定要不要停采 —— 这里报错要是含糊,
+ *       录出来的就是"看着有文件、其实是半截"的东西。
+ */
+static void TestStreamWriterErrors() {
+    uint8_t pcm[64] = {};
+
+    // ---- 没 Open 就用: 不能崩, 也不能说成功 ----
+    {
+        CWavStreamWriter w;
+        CHECK(w.Written() == 0, "没 Open 时 Written() 为 0");
+        CHECK(!w.Write(pcm, sizeof(pcm)), "没 Open 就 Write → false");
+        CHECK(w.Finish(), "没 Open 就 Finish → true(本来就没东西要落)");
+    }
+
+    // ---- 路径打不开: Open 要报出来, 且不留半个文件 ----
+    {
+        CWavStreamWriter w;
+        CHECK(w.Open(nullptr, false) == AudioSdk::AudioSdkState::FILE_OPEN_FAILED,
+              "路径为 NULL → FILE_OPEN_FAILED");
+        CHECK(w.Open(".", false) == AudioSdk::AudioSdkState::FILE_OPEN_FAILED,
+              "目标是目录 → FILE_OPEN_FAILED");
+        CHECK(w.Open("no_such_dir_zzz/x.wav", false)
+                  == AudioSdk::AudioSdkState::FILE_OPEN_FAILED,
+              "目录不存在 → FILE_OPEN_FAILED");
+        CHECK(!w.Write(pcm, sizeof(pcm)), "Open 失败之后 Write 仍是 false");
+    }
+
+    // ---- 空块不算失败: 设备刚起时给 0 字节的块是正常现象 ----
+    {
+        const std::string path = "t_writer_empty.wav";
+        std::remove(path.c_str());
+
+        CWavStreamWriter w;
+        CHECK(w.Open(path.c_str(), false) == AudioSdk::AudioSdkState::NONE, "空录音: Open 成功");
+        CHECK(w.Write(pcm, 0), "写 0 字节不算失败");
+        CHECK(w.Written() == 0, "写 0 字节不改已写字节数");
+        CHECK(w.Finish(), "空录音: Finish 成功");
+
+        const std::vector<uint8_t> buf = tst::ReadAll(path);
+        CHECK(buf.size() == sizeof(WavHeader), "空录音落盘就是一个只有 44 字节头的 WAV");
+        if (buf.size() == sizeof(WavHeader)) {
+            WavValidate v;
+            CHECK(v.Validate(buf.data(), buf.size()), "空 WAV 的头是合法的(长度 0)");
+        }
+        std::remove(path.c_str());
+    }
+}
+
 int main() {
     tst::Begin("反向测试");
     RUN(TestBadRiffMagic);
@@ -416,5 +467,6 @@ int main() {
     RUN(TestBadFileViaPlayer);
     RUN(TestNameDisguise);
     RUN(TestSaveToUnwritablePath);
+    RUN(TestStreamWriterErrors);
     return tst::Summary("反向");
 }

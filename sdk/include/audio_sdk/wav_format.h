@@ -4,6 +4,7 @@
 */
 #pragma once
 #include <cstdint>
+#include <fstream>
 
 #include "audio_sdk/audio_types.h"
 #include "audio_sdk/audio_export.h"
@@ -49,4 +50,27 @@ public:
                 uint32_t sampleRate    = SAMPLE_RATE,
                 uint16_t channels      = CHANNELS,
                 uint16_t bitsPerSample = BITS_PER_SAMPLE);
+};
+
+/**
+ * @brief 边录边写器: 开文件先落占位头 → 逐块追加密文/明文 → 收尾回填真实长度
+ */
+class CWavStreamWriter{
+public:
+    ~CWavStreamWriter();                 // 兜底: 忘了 Finish 也要把头补上再关
+
+    // 打开文件并写好占位头(dataSize 记 0)。bEncrypt: true 存 .aenc, false 存明文 WAV
+    AudioSdk::AudioSdkState Open(const char* utf8Path, bool bEncrypt);
+
+    // 追加一块 PCM
+    bool Write(void* pcm, size_t n);
+    bool Finish();
+
+    uint64_t Written() const { return m_written; }
+
+private:
+    std::ofstream  m_file;
+    bool           m_encrypt = false;
+    uint64_t       m_written = 0;       // 已写 PCM 字节数(也是下一块的 XOR 偏移)
+    std::streamoff m_headerPos = 0;     // 44 字节 WAV 头在文件里的偏移
 };

@@ -61,6 +61,43 @@ static void TestStartTwice() {
 }
 
 /**
+ * @brief 输出路径开不了文件时的开始录音: 要当场报错, 且设备必须收干净
+ * @note 改成流式录入之后, StartRecording 一上来就要开文件 —— 这是新加的一条失败路径。
+ *       老实现要等 Stop 落盘才发现写不了, 那时用户已经白录了一场, 而且回报的是
+ *       OUT_OF_MEMORY 这类跟真实原因无关的码。
+ */
+static void TestStartWithUnwritableOutput() {
+    const std::string bad = "no_such_dir_zzz/t_bad_out";
+
+    CAudioRecorder rec;
+    rec.SetOutputPath(bad.c_str());
+    tst::SetEncrypt(rec, false);
+
+    const AudioSdk::AudioSdkState st = rec.StartRecording();
+    if (tst::DeviceUnavailable(st)) { tst::Skip("输出路径不可写", "没有可用录音设备"); return; }
+    CHECK(st == AudioSdk::AudioSdkState::FILE_OPEN_FAILED,
+          "输出目录不存在 → StartRecording 当场报 FILE_OPEN_FAILED");
+    if (st != AudioSdk::AudioSdkState::FILE_OPEN_FAILED) return;
+
+    // 设备已经在失败路径里收尾了, 状态不能停在"正在录"
+    CHECK(rec.StopRecording() == AudioSdk::AudioSdkState::NONE,
+          "失败后 Stop 返回 NONE(设备已收干净)");
+    CHECK(rec.GetRecordedMs() == 0, "失败后已录时长为 0");
+    CHECK(!rec.GetIsPaused(), "失败后不是暂停态");
+
+    // 换个能写的路径就该正常起来 —— 证明上一条失败没把设备/状态弄坏
+    const std::string base = "t_after_bad_out";
+    rec.SetOutputPath(base.c_str());
+    const AudioSdk::AudioSdkState st2 = rec.StartRecording();
+    CHECK(st2 == AudioSdk::AudioSdkState::NONE, "换成可写路径后能正常开录");
+    if (st2 == AudioSdk::AudioSdkState::NONE) {
+        ::Sleep(400);
+        CHECK(rec.StopRecording() == AudioSdk::AudioSdkState::NONE, "接着正常停止落盘");
+        std::remove(tst::RecFileName(base, rec).c_str());
+    }
+}
+
+/**
  * @brief 没开始就停止: 未录制是正常状态而不是错误, 应返回 NONE
  */
 static void TestStopWithoutStart() {
@@ -422,6 +459,7 @@ static void TestDestroyWhileRecording() {
 int main() {
     tst::Begin("异常测试");
     RUN(TestStartTwice);
+    RUN(TestStartWithUnwritableOutput);
     RUN(TestStopWithoutStart);
     RUN(TestPauseWithoutStart);
     RUN(TestPauseResumeTiming);
