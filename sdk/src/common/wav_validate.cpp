@@ -11,13 +11,15 @@ WavValidate::WavValidate() = default;
 WavValidate::~WavValidate() = default;
 
 /**
- * @brief 校验内存中的 WAV 文件
- * @param data 整个 WAV 文件的内存缓冲（文件头 + PCM 数据）
+ * @brief 校验 WAV 文件头
+ * @param data 缓冲数据
  * @param size 缓冲长度
+ * @param fileSize 文件真实总长; 0 表示缓冲就是整个文件
  * @return 校验通过返回 true
  */
-bool WavValidate::Validate(const uint8_t* data, size_t size){
-    return ReadHeader(data, size) && ValidateHeader(data, size);
+bool WavValidate::Validate(const uint8_t* data, size_t size, size_t fileSize){
+    if (fileSize == 0) fileSize = size;      // 没给总长就是"缓冲即整文件"
+    return ReadHeader(data, size) && ValidateHeader(data, size, fileSize);
 }
 
 /**
@@ -40,10 +42,11 @@ bool WavValidate::ReadHeader(const uint8_t* data, size_t size){
  * @brief 校验 WAV 文件头内容
  * @param data 原始文件缓冲(子块遍历要用 —— m_header 只是 44 字节拷贝,
  *             走到 LIST 这类子块时就出它的界了, 初版在这里踩过栈越界)
- * @param size 文件实际总长度
+ * @param size 缓冲长度 
+ * @param fileSize 文件真实总长度 —— 头里自报的长度一律跟它对
  * @return 校验通过返回 true
  */
-bool WavValidate::ValidateHeader(const uint8_t* data, size_t size){
+bool WavValidate::ValidateHeader(const uint8_t* data, size_t size, size_t fileSize){
     // 顶层两标识: 容器必须是 RIFF/WAVE。fmt 在哪、data 在哪, 都交给下面的遍历。
     // (44 字节快照里的 fmtId/dataId/dataSize 只是"标准排布"的巧合快照,
     //  JUNK/bext 排在 fmt 前时那些偏移上全是别的块 —— 一律不读快照, 按遍历为准)
@@ -56,14 +59,10 @@ bool WavValidate::ValidateHeader(const uint8_t* data, size_t size){
     const size_t riffSize     = m_header.riffSize; // RIFF 块载荷长度 = 文件总长 - 8
 
     // riffSize 必须与文件实际大小一致: 短了是截断, 长了说明缓冲里混了别的东西。
-    if (riffSize + 8u != size)
+    if (riffSize + 8u != fileSize)
         return false;
 
     // ---- 按 RIFF 子块遍历, 依次定位 fmt 块与 data 块的真实偏移 ----
-    // 规范只保证 fmt 在 data 之前, 不保证它紧跟 "WAVE":
-    // JUNK(填充预留)、bext(广播波) 可以排在 fmt 前面, LIST/INFO 等排在 fmt 与 data 之间。
-    // 每个块 = 4 字节块 ID + 4 字节小端长度 + 载荷; 块之间按 2 字节对齐
-    // 遍历必须走【原缓冲】: m_header 只是 44 字节的拷贝, 块的位置可以远在它之外
     bool   haveFmt   = false;
     size_t pos       = 12;                         // 第一个子块紧跟 12 字节 RIFF 头
     while (pos + 8 <= size) {
@@ -111,7 +110,7 @@ bool WavValidate::ValidateHeader(const uint8_t* data, size_t size){
             if (!haveFmt)
                 return false;
             // 不能超过文件末尾(data 后允许再垫别的子块, 不要求顶到 EOF)
-            if (len + (pos + 8) > size)
+            if (len + (pos + 8) > fileSize)
                 return false;
             // 数据长度必须是帧的整数倍, 否则最后一帧是残的
             if (len % m_header.blockAlign != 0)

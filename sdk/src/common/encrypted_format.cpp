@@ -21,11 +21,12 @@ const uint8_t CEncryptedFormat::kKey[16] = {
  * @brief XOR 对称加解密（自逆：加密和解密是同一个函数）
  * @param data 待处理数据（原地）
  * @param n 数据长度
+ * @param offset data[0] 在整个数据区里的字节偏移（整段一次处理时传 0）
  */
-void CEncryptedFormat::XorCrypt(uint8_t* data, size_t n)
+void CEncryptedFormat::XorCrypt(uint8_t* data, size_t n, size_t offset)
 {
     for (size_t i = 0; i < n; i++)
-        data[i] ^= kKey[i % 16];
+        data[i] ^= kKey[(offset + i) % 16];
 }
 
 /**

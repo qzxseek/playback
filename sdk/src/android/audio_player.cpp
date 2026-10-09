@@ -2,7 +2,7 @@
    @Author : 孟源
    @note : 音频播放实现(Android, PIMPL: AAudio 全部收在 Impl 内, 不泄露到接口头)
            仅在 Android/NDK 下编译(依赖 <aaudio/AAudio.h>, 要求 API 26+)。
-           流式输出: 不为整段 PCM 排队, 而是在 AAudio 回调里按读游标按需喂数据。
+           流式读取: 开一条生产者线程按块读进 CByteRing, AAudio 回调只从环里拷 
            对外接口见 audio_sdk/audio_player.h(平台无关), 与 Windows 侧同名同签名。
 */
 #include "audio_sdk/audio_player.h"
@@ -10,18 +10,25 @@
 #include "audio_sdk/wav_format.h"
 #include "audio_sdk/encrypted_format.h"
 #include "audio_sdk/waveform.h"
+#include "audio_sdk/byte_ring.h"
 #include "audio_sdk/logging.h"
 
 #include <aaudio/AAudio.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <stdexcept>    // std::system_error: std::thread 起不来时抛的
 #include <string>
+#include <thread>
 #include <vector>
 
 static constexpr const char* kTag = "player";   // 日志来源标记
+
+// 生产者空转时的睡眠间隔
+static constexpr int kIdleMs = 2;
 
 /**
  * @brief 音频播放实现(Android, PIMPL: AAudio 全部收在 Impl 内, 不泄露到接口头)
@@ -36,11 +43,20 @@ struct CAudioPlayer::Impl
 
     aaudio_data_callback_result_t OnAudioReady(void* audioData, int32_t numFrames);
 
-    void CleanUpStream();             // 停流 + 关流 + 清状态
+    void CleanUpStream();             // 停生产者 + 停流 + 关流 + 清状态
+    void ReadLoop();                  // 生产者线程: 把文件里的 PCM 读进环
 
-    std::vector<uint8_t> m_vecPcm;    // 明文 PCM(解密后驻留内存)
-    size_t   m_dataSize = 0;          // PCM 总字节数
-    std::atomic<size_t> m_readPos{0};
+    // 播放期间文件常开, 只由生产者线程碰(设备回调不碰文件)。
+    std::ifstream m_file;
+    std::string   m_path;             // 原路径: BuildWaveform 要另开一份流
+    size_t m_payloadOffset = 0;       // data 块在文件里的起始偏移
+    bool m_encrypted = false;       // 密文容器: 每块要按载荷内偏移解密
+    size_t m_dataSize = 0;            // PCM 总字节数(载荷长度)
+
+    CByteRing m_ring;
+    std::thread m_reader;
+    std::atomic<bool> m_stopReq{false};
+
     // 回调自然播完置位(true 表示已喂完并返回 STOP), 供 IsPlaying() 如实上报
     std::atomic<bool> m_reachedEnd{false};
     int32_t  m_channels = CHANNELS;
@@ -77,9 +93,12 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
     // 先清掉上一次(若还在播)
     StopPlay();
     Impl* p = m_impl;
+    p->m_dataSize = 0;
+    p->m_path.clear();
 
-    // 读取整个文件(Android 路径就是 UTF-8, 直接开)
-    std::ifstream file(utf8Path, std::ios::in | std::ios::binary);
+    // 文件常开到播完为止(Android 路径就是 UTF-8, 直接开)
+    std::ifstream& file = p->m_file;
+    file.open(utf8Path, std::ios::in | std::ios::binary);
     if (!file.is_open()) {
         AUDIO_LOG_ERROR(kTag, "打开失败 path=\"%s\" -> FILE_OPEN_FAILED", utf8Path);
         return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
@@ -92,12 +111,16 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
                         static_cast<long long>(lFileSize), utf8Path);
         return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;   // 文件太小, 连魔数都放不下
     }
+
+    const size_t prefixSize = lFileSize < 64 * 1024
+                            ? static_cast<size_t>(lFileSize) : size_t{64 * 1024};
     file.seekg(0, std::ios::beg);
-    std::vector<uint8_t> vecBuf(static_cast<size_t>(lFileSize));
-    if (!file.read(reinterpret_cast<char*>(vecBuf.data()), lFileSize)) {
+    std::vector<uint8_t> vecBuf(prefixSize);
+    if (!file.read(reinterpret_cast<char*>(vecBuf.data()), static_cast<std::streamsize>(prefixSize))) {
         AUDIO_LOG_ERROR(kTag, "读取失败 path=\"%s\" -> FILE_READ_FAILED", utf8Path);
         return AudioSdk::AudioSdkState::FILE_READ_FAILED;
     }
+    const size_t fileSize = static_cast<size_t>(lFileSize);
 
     WavValidate validator;
     const WavHeader* pHdr = nullptr;
@@ -110,9 +133,11 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
                             vecBuf.size(), utf8Path);
             return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;
         }
-        // 剥掉 6 字节前缀后校验; 内部 WAV 头自洽(riffSize 等按 44 头算)
+        // 剥掉 6 字节前缀后校验; 内部 WAV 头自洽(riffSize 等按 44 头算)。
+        // 总长也要跟着减 6: 头里的 riffSize 描述的是内层 WAV, 不含容器前缀
         if (!validator.Validate(vecBuf.data() + CEncryptedFormat::kAencPrefixSize,
-                                vecBuf.size() - CEncryptedFormat::kAencPrefixSize)) {
+                                vecBuf.size() - CEncryptedFormat::kAencPrefixSize,
+                                fileSize - CEncryptedFormat::kAencPrefixSize)) {
             AUDIO_LOG_ERROR(kTag, "AENC 内层 WAV 头不合法 path=\"%s\" -> FORMAT_NOT_SUPPORTED", utf8Path);
             return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;
         }
@@ -123,7 +148,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
     }
     else if (vecBuf.size() >= sizeof(WavHeader) &&
                 std::memcmp(vecBuf.data(), "RIFF", 4) == 0){
-        if (!validator.Validate(vecBuf.data(), vecBuf.size())) {
+        if (!validator.Validate(vecBuf.data(), vecBuf.size(), fileSize)) {
             AUDIO_LOG_ERROR(kTag, "WAV 头校验不过 path=\"%s\" -> FORMAT_NOT_SUPPORTED", utf8Path);
             return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;
         }
@@ -135,16 +160,12 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
         return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;   // 不是认识的音频格式
     }
 
-    // 数据区: 明文直接取; 加密容器整段 XOR 解回明文(XOR 等长, 长度不变)。
-    // 按 data 块的真实偏移+长度取 —— data 后面可以再垫 LIST/ID3 等尾块,
-    // 直接顶到文件末尾会把尾块字节当 PCM 播出去(结尾杂音 + 时长虚涨)。
-    p->m_vecPcm.assign(vecBuf.begin() + payloadOffset,
-                       vecBuf.begin() + payloadOffset + validator.GetDataSize());
-    if (bEncrypted)
-        CEncryptedFormat::XorCrypt(p->m_vecPcm.data(), p->m_vecPcm.size());
+    p->m_path          = utf8Path;
+    p->m_payloadOffset = payloadOffset;
+    p->m_encrypted     = bEncrypted;
+    p->m_dataSize      = validator.GetDataSize();
 
-    p->m_dataSize = p->m_vecPcm.size();
-    p->m_readPos.store(0, std::memory_order_release);    // 流式游标从头开始
+    p->m_ring.Reset(0);                                  // 流式游标从头开始
     p->m_reachedEnd.store(false, std::memory_order_release);
     p->m_channels = pHdr->numChannels ? pHdr->numChannels : CHANNELS;
     p->m_bytesPerFrame = p->m_channels * (pHdr->bitsPerSample / 8);
@@ -155,7 +176,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
     if (result != AAUDIO_OK || !builder){
         AUDIO_LOG_ERROR(kTag, "AAudio_createStreamBuilder 失败 (AAudio=%d) -> PLATFORM_ERROR",
                         static_cast<int>(result));
-        p->m_vecPcm.clear();
+        p->CleanUpStream();
         return AudioSdk::AudioSdkState::PLATFORM_ERROR;
     }
 
@@ -178,7 +199,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
                         result == AAUDIO_ERROR_INVALID_FORMAT ? "FORMAT_NOT_SUPPORTED"
                       : result == AAUDIO_ERROR_UNAVAILABLE    ? "DEVICE_BUSY"
                                                               : "DEVICE_NOT_FOUND");
-        p->m_vecPcm.clear();
+        p->CleanUpStream();
         if (result == AAUDIO_ERROR_INVALID_FORMAT)
             return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;
         if (result == AAUDIO_ERROR_UNAVAILABLE)
@@ -186,13 +207,21 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
         return AudioSdk::AudioSdkState::DEVICE_NOT_FOUND;
     }
 
+    // 先起生产者再开流
+    p->m_stopReq.store(false, std::memory_order_release);
+    try {
+        p->m_reader = std::thread([p] { p->ReadLoop(); });
+    } catch (const std::system_error&) {
+        AUDIO_LOG_ERROR(kTag, "起播放读取线程失败 -> UNKNOWN_ERROR");
+        p->CleanUpStream();
+        return AudioSdk::AudioSdkState::UNKNOWN_ERROR;
+    }
+
     result = AAudioStream_requestStart(p->m_stream);
     if (result != AAUDIO_OK){
         AUDIO_LOG_ERROR(kTag, "AAudioStream_requestStart 失败 (AAudio=%d, 流已开成功) -> DEVICE_NOT_FOUND",
                         static_cast<int>(result));
-        AAudioStream_close(p->m_stream);
-        p->m_stream = nullptr;
-        p->m_vecPcm.clear();
+        p->CleanUpStream();
         return AudioSdk::AudioSdkState::DEVICE_NOT_FOUND;
     }
 
@@ -227,51 +256,122 @@ void CAudioPlayer::Impl::ErrorCallback(
 }
 
 /**
-   @brief : 流式喂数据(音频线程): 按读游标把下一段 PCM 拷给设备
-             设备要多少帧给多少, 喂完为止 —— 这就是"流式", 而非"一次写满"
+   @brief : 从环里取数据喂设备(音频线程)
+   @param audioData : 设备要的 PCM 数据
+   @param numFrames : 设备本次要的帧数
 */
 aaudio_data_callback_result_t CAudioPlayer::Impl::OnAudioReady(
         void* audioData, int32_t numFrames) {
-    const int32_t want = numFrames * m_bytesPerFrame;   // 设备本次要的字节数
+    const size_t want = static_cast<size_t>(numFrames) *
+                        static_cast<size_t>(m_bytesPerFrame);   // 设备本次要的字节数
     auto* out = static_cast<uint8_t*>(audioData);
 
-    size_t pos = m_readPos.load(std::memory_order_acquire);
+    // 顺序要紧: 先 acquire 读 head —— 它同时把 base/tail 的值也发布过来
+    // (Reset 是先写这两支、再用 release 落 head 的)。反过来读会拿到过时的 base,
+    // 屏幕上就是"Seek 完了却按老位置判没货"。
+    const size_t head = m_ring.Head();
+    const size_t base = m_ring.Base();
+    const size_t pos  = m_ring.Tail();
 
     if (pos >= m_dataSize){                              // 已喂完
-        std::memset(out, 0, static_cast<size_t>(want));   // 尾部补静音
+        std::memset(out, 0, want);      // 尾部补静音
         m_reachedEnd.store(true, std::memory_order_release);  // 通知 UI: 自然播完了
         return AAUDIO_CALLBACK_RESULT_STOP;               // 让 AAudio 自动停流
     }
 
-    const size_t remain = m_dataSize - pos;              // 与 pos 同源, 保证不越界
-    const size_t n = std::min(static_cast<size_t>(want), remain);
-    std::memcpy(out, m_vecPcm.data() + pos, n);
+    // 环里没有它要的那一段: 刚开播、Seek 刚改过位置、或者生产者一时没跟上, 补静音继续
+    if (pos < base || pos >= head){
+        std::memset(out, 0, want);
+        return AAUDIO_CALLBACK_RESULT_CONTINUE;
+    }
 
-    // CAS 推进游标: 期间若 Seek 已经改过 m_readPos, 这次 CAS 失败即放弃推进,
-    m_readPos.compare_exchange_strong(pos, pos + n, std::memory_order_acq_rel);
+    size_t n = head - pos;                               // 与 pos/head 同源, 不会越界
+    if (n > want) n = want;
+    m_ring.ReadAt(pos, out, n);
 
-    if (n < static_cast<size_t>(want))
-        std::memset(out + n, 0, static_cast<size_t>(want) - n);  // 末尾不足补静音
+    // CAS 推进游标: 期间若 Seek 已经改过读位置, 这次 CAS 失败即放弃这一块
+    m_ring.AdvanceTail(pos, pos + n);
+
+    if (n < want)
+        std::memset(out + n, 0, want - n);               // 末尾不足补静音
 
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
 /**
-   @brief : 停流 + 关流 + 清状态(StopPlay 与析构共用)
+   @brief : 生产者线程 —— 把文件里的 PCM 按块读进环
+   @note 循环里三件事: 消费者跑到环外了就重置到它要的位置; 环满/读完就歇一下;
+         否则读一块、解密、入环
+*/
+void CAudioPlayer::Impl::ReadLoop(){
+    std::vector<uint8_t> chunk(64 * 1024);
+
+    while (!m_stopReq.load(std::memory_order_relaxed)) {
+        const size_t want = m_ring.Tail();
+        const size_t head = m_ring.Head();
+        const size_t base = m_ring.Base();
+        if (want < base || want > head) {
+            m_ring.Reset(want);
+            continue;
+        }
+
+        if (head >= m_dataSize) {            // 文件已经读完, 让环慢慢被消费掉
+            std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs));
+            continue;
+        }
+
+        const size_t space = m_ring.Space();
+        if (space == 0) {                    // 环满了: 等设备把数据取走
+            std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs));
+            continue;
+        }
+
+        size_t n = m_dataSize - head;
+        if (n > chunk.size()) n = chunk.size();
+        if (n > space) n = space;
+
+        // 每块都 seekg: 读满 64KB(约 0.74 秒音频)才做一次, 开销可以忽略;
+        m_file.clear();                      
+        m_file.seekg(static_cast<std::streamoff>(m_payloadOffset + head));
+        if (!m_file.read(reinterpret_cast<char*>(chunk.data()), static_cast<std::streamsize>(n))) {
+            // 文件被截断/被别的程序截走
+            m_file.clear();
+            std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs * 10));
+            continue;
+        }
+        if (m_encrypted)
+            CEncryptedFormat::XorCrypt(chunk.data(), n, head);   // 密钥相位跟着载荷内偏移走
+
+        m_ring.Write(chunk.data(), n);
+    }
+}
+
+/**
+   @brief : 停生产者 + 停流 + 关流 + 清状态(StopPlay 与析构共用)
+   @note 可重入: m_reader 一旦 join 过就不再 joinable, 第二次调用直接跳过。
 */
 void CAudioPlayer::Impl::CleanUpStream(){
     m_isPlaying = false;
     m_isPaused  = false;
     m_reachedEnd.store(false, std::memory_order_release);
+
+    // 先停生产者再关流
+    m_stopReq.store(true, std::memory_order_release);
+    if (m_reader.joinable())
+        m_reader.join();
+
     if (m_stream){
         AAudioStream_requestStop(m_stream);
-        // close() 会阻塞到回调线程退出, 之后才能安全动 m_vecPcm
-        AAudioStream_close(m_stream);
+        AAudioStream_close(m_stream);     // close() 会阻塞到回调线程退出
         m_stream = nullptr;
     }
-    m_vecPcm.clear();
+
+    m_ring.Reset(0);                      // 生产者已停, 这里动环没有竞争
+    if (m_file.is_open())
+        m_file.close();                   // 路径留着: BuildWaveform 要按它另开一份流
     m_dataSize = 0;
-    m_readPos.store(0, std::memory_order_release);
+    m_payloadOffset = 0;
+    m_encrypted = false;
     }
 
     void CAudioPlayer::PausePlay(){             // 暂停播放
@@ -286,7 +386,7 @@ void CAudioPlayer::Impl::CleanUpStream(){
 void CAudioPlayer::ResumePlay(){             // 继续播放
     Impl* p = m_impl;
     if (!p->m_isPlaying || !p->m_isPaused || !p->m_stream) return;
-    AAudioStream_requestStart(p->m_stream);   // 读游标 m_readPos 还在原处, 接着喂
+    AAudioStream_requestStart(p->m_stream);   // 读游标还在原处(环里的数据也还在), 接着喂
     p->m_isPaused = false;
     AUDIO_LOG_INFO(kTag, "继续于 %u ms", GetPlayPosMs());
 }
@@ -317,7 +417,7 @@ AudioSdk::AudioSdkState CAudioPlayer::Seek(uint32_t posBytes){
     if (posBytes > p->m_dataSize) posBytes = static_cast<uint32_t>(p->m_dataSize);
     AUDIO_LOG_INFO(kTag, "跳转位置 -> %u 字节", posBytes);
 
-    p->m_readPos.store(posBytes, std::memory_order_release);   // 原子改游标
+    p->m_ring.SeekTo(posBytes);   // 只改读位置; 生产者下一轮就把环重置到这里重读
     // 设备内部可能已预取旧位置的数据: 只改游标不冲刷, 会先播一段旧内容再跳
     AAudioStream_requestFlush(p->m_stream);     // 冲刷掉设备缓冲里未播的数据
     return AudioSdk::AudioSdkState::NONE;
@@ -327,7 +427,7 @@ AudioSdk::AudioSdkState CAudioPlayer::Seek(uint32_t posBytes){
    @brief : 获取当前播放位置(已喂给设备的字节数, UI 轮询它画进度条)
 */
 uint32_t CAudioPlayer::GetPlayPos() const{
-    return static_cast<uint32_t>(m_impl->m_readPos.load(std::memory_order_acquire));
+    return static_cast<uint32_t>(m_impl->m_ring.Tail());
 }
 
 uint32_t CAudioPlayer::GetTotalPos() const{
@@ -342,7 +442,7 @@ uint32_t CAudioPlayer::GetPlayPosMs() const{
     const uint32_t byteRate = m_impl->m_byteRate;
     if (byteRate == 0) return 0;                       // 未加载文件, 别除零
     // 先乘后除(乘 1000ULL 避免 32 位溢出), 拿到的才是毫秒
-    const size_t pos = m_impl->m_readPos.load(std::memory_order_acquire);
+    const size_t pos = m_impl->m_ring.Tail();
     return static_cast<uint32_t>(pos * 1000ULL / byteRate);
 }
 
@@ -361,21 +461,23 @@ uint32_t CAudioPlayer::GetTotalPosMs() const{
    @param : cb - 回调(传 NULL 则什么都不做)
    @param : userData - 透传给回调的指针
    @note 在【调用线程】同步回调一次, 不涉及音频线程。
-         m_vecPcm 在播放期间内容不变(读游标是单独的原子变量), 所以读它安全。
+         分块扫文件算(实现见 CWaveform::BuildFilePeaks), 不是拿整份 PCM ——
+         内存不随文件大小涨, 也不会跟生产者抢 m_file(它自己另开一份流)
          回调返回后缓冲即失效, 调用方需要就自己拷走。
 */
 void CAudioPlayer::BuildWaveform(AudioSdkWaveCallback cb, void* userData){
     if (!cb) return;
 
     Impl* p = m_impl;
-    if (p->m_vecPcm.empty()) return;               // 还没加载文件
+    if (p->m_dataSize == 0 || p->m_path.empty()) return;   // 还没加载文件
 
     // 用栈上的定长缓冲: 1024 点 × 2 × 4 字节 = 8KB, 不必分配堆内存
     float minmax[CWaveform::kFilePoints * 2] = {};
 
-    // 传字节指针即可, ComputePeaks 内部按字节读(不依赖 vector<uint8_t> 的对齐)
-    CWaveform::ComputePeaks(p->m_vecPcm.data(), p->m_vecPcm.size(),
-                            minmax, CWaveform::kFilePoints);
+    if (!CWaveform::BuildFilePeaks(p->m_path.c_str(), p->m_payloadOffset, p->m_dataSize,
+                                   p->m_encrypted, minmax, CWaveform::kFilePoints))
+        return;                                            // 文件打不开, 当没加载
+
     cb(minmax, CWaveform::kFilePoints, userData);
 }
 

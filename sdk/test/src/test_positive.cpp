@@ -12,7 +12,9 @@
 #include "audio_sdk/audio_recorder.h"
 #include "audio_sdk/encrypted_format.h"
 #include "audio_sdk/wav_validate.h"
+#include "audio_sdk/waveform.h"      
 
+#include <algorithm>   // std::min
 #include <windows.h>   // Sleep
 
 // ===========================================================================
@@ -138,9 +140,100 @@ static void TestExtraChunkOffsets() {
     }
 }
 
+/**
+ * @brief 流式播放的两块地基: 只给文件前缀也能验头、XOR 能从半路开始解
+ * @note 不需要设备。播放不再把整段 PCM 读进内存, 靠的就是这两条:
+ *       验头只读前缀(长度得拿文件总长去对, 不能拿前缀长度去对);
+ *       解密按块做(密钥相位得跟着数据在数据区里的位置走, 不能每块都从 0 起)。
+ *       任何一个不对, 流式播出来的就是乱码或直接被拒。
+ */
+static void TestStreamPlumbing() {
+    const std::vector<uint8_t> wav = tst::MakeWav(SAMPLE_RATE / 4);   // 0.25 秒
+    const size_t pcmBytes = wav.size() - sizeof(WavHeader);
+    const uint8_t* pcm = wav.data() + sizeof(WavHeader);
+
+    // ---- 一、前缀校验: 只给前 64 字节 + 真实总长, 结论必须和整份校验一样 ----
+    WavValidate full;
+    CHECK(full.Validate(wav.data(), wav.size()), "整份校验通过(基线)");
+
+    const size_t prefix = 64;        // 44 字节头 + 余量, 足够走到 data 块头
+    WavValidate head;
+    CHECK(head.Validate(wav.data(), prefix, wav.size()), "只给前缀 + 真实总长也验得通过");
+    CHECK(head.GetDataOffset() == full.GetDataOffset(), "前缀校验给的 data 偏移与整份一致");
+    CHECK(head.GetDataSize() == full.GetDataSize(), "前缀校验给的 data 长度与整份一致");
+    CHECK(head.Header().sampleRate == full.Header().sampleRate,
+          "前缀校验读出的格式参数与整份一致");
+
+    // 总长是"拿它去对 riffSize"的, 报错就必须拒 —— 否则前缀校验等于没校验
+    CHECK(!head.Validate(wav.data(), prefix, wav.size() - 2), "总长少报 2 字节被拒");
+    CHECK(!head.Validate(wav.data(), prefix, wav.size() + 2), "总长多报 2 字节被拒");
+
+    // ---- 二、XOR 偏移: 整份加密后, 从任意位置切开分块解, 拼回来要是原明文 ----
+    std::vector<uint8_t> cipher(pcm, pcm + pcmBytes);
+    CEncryptedFormat::XorCrypt(cipher.data(), cipher.size());      // 相位从 0 起, 即真实密文
+
+    // 从一个 16 的倍数之外的位置单独解一块, 必须等于整份密文的同一段
+    const size_t off = 8, one = 16;
+    std::vector<uint8_t> slice(pcm + off, pcm + off + one);
+    CEncryptedFormat::XorCrypt(slice.data(), one, off);
+    CHECK(std::memcmp(slice.data(), cipher.data() + off, one) == 0,
+          "单解 offset=8 起的一块 == 整份密文的同一段");
+
+    // 按播放器的方式分块解密: 块长故意都不是 16 的倍数, 拼回来必须逐字节等于原明文
+    std::vector<uint8_t> back = cipher;
+    const size_t sizes[] = {40, 7, 129, 1000};
+    size_t pos = 0;
+    for (size_t i = 0; pos < back.size(); ++i) {
+        // 加括号是为了躲开 windows.h 的 min 宏(它会把 std::min 也一并替换掉)
+        const size_t n = (std::min)(sizes[i % 4], back.size() - pos);
+        CEncryptedFormat::XorCrypt(back.data() + pos, n, pos);
+        pos += n;
+    }
+    CHECK(back == std::vector<uint8_t>(pcm, pcm + pcmBytes),
+          "按任意块长分块解密后拼回来 == 原明文");
+}
+
 // ===========================================================================
 // 录音 / 播放(需要设备)
 // ===========================================================================
+
+// BuildWaveform 的回调: 把 SDK 给的峰值对抄进调用方自己的缓冲
+namespace {
+struct WaveSink {
+    float data[AUDIO_SDK_WAVE_FILE_POINTS * 2] = {};
+    int   count = 0;
+};
+
+void OnBuildWave(const float* minmax, int points, void* userData) {
+    WaveSink* sink = static_cast<WaveSink*>(userData);
+    sink->count = points;
+    const int n = points < AUDIO_SDK_WAVE_FILE_POINTS ? points : AUDIO_SDK_WAVE_FILE_POINTS;
+    for (int i = 0; i < n * 2; ++i) sink->data[i] = minmax[i];
+}
+}   // namespace
+
+/**
+ * @brief 播放器算出的整文件波形 vs 拿明文 PCM 整份算的 —— 必须逐点一致
+ * @param player   已经在播某个文件的播放器
+ * @param pcm      那个文件的【明文】PCM(不解密的话就是文件里 data 块那段)
+ * @note 分块扫描只要有一处边界、步长或解密相位算错, 这里就对不上。
+ *       顺带验了"整份算"的老算法和"流式算"的新算法结果相同 —— 换法是换了, 画出来的波形没变。
+ */
+static void CheckWaveform(CAudioPlayer& player, const uint8_t* pcm, size_t pcmBytes) {
+    WaveSink sink;
+    player.BuildWaveform(&OnBuildWave, &sink);
+    CHECK(sink.count == AUDIO_SDK_WAVE_FILE_POINTS, "BuildWaveform 给出 kFilePoints 个峰值点");
+    if (sink.count != AUDIO_SDK_WAVE_FILE_POINTS) return;
+
+    std::vector<float> ref(AUDIO_SDK_WAVE_FILE_POINTS * 2, 0.0f);
+    CWaveform::ComputePeaks(pcm, pcmBytes, ref.data(), AUDIO_SDK_WAVE_FILE_POINTS);
+
+    int bad = 0;
+    for (int i = 0; i < AUDIO_SDK_WAVE_FILE_POINTS * 2; ++i)
+        if (sink.data[i] != ref[i]) ++bad;
+    std::printf("         波形逐点比对: 不一致 %d / %d\n", bad, AUDIO_SDK_WAVE_FILE_POINTS * 2);
+    CHECK(bad == 0, "流式算的整文件波形与整份算的逐点一致");
+}
 
 /**
  * @brief 录音主管线: 录 N 秒 → 停止落盘 → 文件是 .aenc 且内部时长 ≈ N 秒
@@ -231,6 +324,11 @@ static void TestPlayWav() {
     CHECK(player.IsPlaying(), "IsPlaying 为真");
     CHECK(!player.IsPaused(), "刚起播不是暂停态");
 
+    // 播放期间(而不是停播之后)取波形 —— App 就是这么用的: 播放线程先 PlayFile
+    // 再 BuildWaveform。顺带验了另开文件流不会打乱正在播放那条流的读写位置
+    CheckWaveform(player, wav.data() + sizeof(WavHeader), pcmBytes);
+    CHECK(player.IsPlaying(), "取波形不影响播放(还在播)");
+
     const DWORD t0 = ::GetTickCount();
     while (player.IsPlaying() && ::GetTickCount() - t0 < 1500) ::Sleep(20);   // 差值式, 回绕安全
 
@@ -271,6 +369,9 @@ static void TestPlayAenc() {
     const uint32_t ms = player.GetTotalPosMs();
     std::printf("         解密后总时长 %u ms\n", ms);
     CHECK(ms > 400 && ms < 600, "解密后总时长 ≈ 500ms");
+
+    // 加密文件的波形要走"分块读 + 按偏移解密"这条路 —— 相位传 0 的话这里立刻对不上
+    CheckWaveform(player, wav.data() + sizeof(WavHeader), pcmBytes);
 
     player.StopPlay();
     std::remove(path.c_str());
@@ -319,6 +420,7 @@ int main() {
     RUN(TestWavRoundTrip);
     RUN(TestAencRoundTrip);
     RUN(TestExtraChunkOffsets);
+    RUN(TestStreamPlumbing);
     RUN(TestRecordPipeline);
     RUN(TestPlayWav);
     RUN(TestPlayAenc);

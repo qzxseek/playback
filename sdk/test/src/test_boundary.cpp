@@ -10,6 +10,7 @@
 
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/audio_recorder.h"
+#include "audio_sdk/byte_ring.h"
 #include "audio_sdk/wave_ring.h"
 #include "audio_sdk/waveform.h"
 #include "audio_sdk/wav_validate.h"
@@ -255,6 +256,78 @@ static void TestWaveRingArgs() {
     CHECK(ring.Pop(out.data(), 8) == 0, "Reset 后环为空");
 }
 
+/**
+ * @brief 字节环的两头: 写满、绕圈、跨回绕点连读、Reset、CAS 被抢改
+ * @note 不需要设备。这个环跑在"生产者线程 ↔ 音频回调"之间, 写错一位的后果是
+ *       可听见的爆音甚至踩内存, 所以下标回绕和"游标被 Reset 拽走"这两条必须钉死。
+ *       环里按"绝对位置 p 处存 p^0x5A"灌数据, 之后从任意位置抽查 —— 位置即内容,
+ *       读出来对不对一眼可判。
+ */
+static void TestByteRing() {
+    const size_t CAP = 64;
+    CByteRing ring(CAP);
+
+    // 往绝对位置 from 起灌 n 字节
+    auto fill = [&](size_t from, size_t n) {
+        std::vector<uint8_t> tmp(n);
+        for (size_t i = 0; i < n; ++i) tmp[i] = static_cast<uint8_t>((from + i) ^ 0x5A);
+        return ring.Write(tmp.data(), n);
+    };
+    // 从绝对位置 pos 起读 n 字节, 逐字节核对
+    auto verify = [&](size_t pos, size_t n, const char* what) {
+        std::vector<uint8_t> got(n, 0xEE);
+        ring.ReadAt(pos, got.data(), n);
+        int bad = 0;
+        for (size_t i = 0; i < n; ++i)
+            if (got[i] != static_cast<uint8_t>((pos + i) ^ 0x5A)) ++bad;
+        CHECK(bad == 0, what);
+    };
+
+    CHECK(ring.Head() == 0 && ring.Tail() == 0 && ring.Base() == 0,
+          "空环: 三支游标都在 0");
+    CHECK(ring.Space() == CAP, "空环: 可写满整个容量");
+
+    // ---- 写满 / 满了不覆盖未读数据 ----
+    CHECK(fill(0, CAP) == CAP, "写满整个容量");
+    CHECK(ring.Head() == CAP && ring.Space() == 0, "写满后 head 前进到容量, 空间为 0");
+    CHECK(ring.Write(reinterpret_cast<const uint8_t*>("x"), 1) == 0,
+          "环满后再写返回 0, 不覆盖还没被取走的数据");
+    CHECK(ring.Space() == 0, "被拒的那次写入没有改动任何游标");
+
+    // ---- 读走一半, 再灌一批: 缓冲下标这时是绕回来的 ----
+    CHECK(ring.AdvanceTail(0, CAP / 2), "推进读游标(数据只会被覆盖, 不会被清掉)");
+    CHECK(ring.Space() == CAP / 2, "读走一半后空出一半");
+    CHECK(fill(CAP, CAP / 2) == CAP / 2, "接着写第二圈");
+    CHECK(ring.Head() == CAP + CAP / 2, "head 越过一整圈");
+
+    verify(CAP / 2, CAP / 2, "读回第一圈的后半段");
+    verify(CAP, CAP / 2, "读第二圈(缓冲下标已绕回 0)");
+    verify(CAP - 8, 16, "跨回绕点连读 16 字节(下半段落在新一圈的开头)");
+
+    // ---- Reset: 环清空, 三支游标一起落到新位置 ----
+    ring.Reset(1000);
+    CHECK(ring.Head() == 1000 && ring.Tail() == 1000 && ring.Base() == 1000,
+          "Reset 后三支游标一起落到新位置");
+    CHECK(ring.Space() == CAP, "Reset 后空间回到满容量");
+    CHECK(fill(1000, 8) == 8, "Reset 后从新位置能重新写");
+    verify(1000, 8, "Reset 后读到的就是新写进去的");
+
+    // ---- CAS: 期间被 Seek 抢改过, 就不能再推进 ----
+    CByteRing r2(CAP);
+    CHECK(r2.Write(reinterpret_cast<const uint8_t*>("abcdefgh"), 8) == 8, "r2 写入 8 字节");
+    CHECK(!r2.AdvanceTail(3, 4),
+          "尾部不是预期的旧值时 CAS 失败(说明期间被 Seek 改过, 这一块要放弃)");
+    CHECK(r2.Tail() == 0, "CAS 失败没有改动读游标");
+    CHECK(r2.AdvanceTail(0, 4), "尾部对得上时 CAS 成功");
+    CHECK(r2.Tail() == 4, "CAS 成功后读游标推进到位");
+
+    // ---- 读越界的兜底: 游标被 Reset 拽到后面时, 读的地址仍在缓冲之内 ----
+    r2.Reset(1u << 30);                       // 游标跳到很远的地方
+    std::vector<uint8_t> junk(CAP * 4, 0x11);  // 故意申请得比环还大
+    r2.ReadAt(0, junk.data(), junk.size());    // 旧位置早已作废 —— 只要求不越界
+    CHECK(r2.Base() == (1u << 30), "Reset 到远处后 Base 跟着走");
+}
+
 // ===========================================================================
 // 波形峰值计算
 // ===========================================================================
@@ -385,6 +458,7 @@ int main() {
     RUN(TestWaveRingWrap);
     RUN(TestWaveRingOverrun);
     RUN(TestWaveRingArgs);
+    RUN(TestByteRing);
     RUN(TestComputePeaksBounds);
     RUN(TestReadWaveBounds);
     RUN(TestSeekClamp);

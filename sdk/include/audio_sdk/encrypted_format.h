@@ -26,7 +26,7 @@ public:
    static AudioSdk::AudioSdkState SaveAencFile(const char* filePath,const void* pcmData,
       size_t pcmSize);
 
-   static void XorCrypt(uint8_t* data, size_t n);
+   static void XorCrypt(uint8_t* data, size_t n, size_t offset = 0);
 
 private:
    // 密钥只存在 .cpp 里，绝不放进头文件

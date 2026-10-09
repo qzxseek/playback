@@ -26,17 +26,8 @@ public:
     // 播放: 整个文件的峰值点数。UI 宽度约 900px, 1024 点足够铺满。
     static constexpr int kFilePoints = AUDIO_SDK_WAVE_FILE_POINTS;
 
-    /**
-     * @brief 从 16bit PCM 算峰峰值对(降采样), 归一化到 [-1, 1]
-     * @param pcm16le    16bit 单声道 PCM 起始地址, 小端
-     * @param byteCount  字节数(采样数 = byteCount / 2, 奇数尾字节忽略)
-     * @param out        输出缓冲, 布局 [min0, max0, min1, max1, ...], 共 2*points 个 float
-     * @param points     要输出多少个峰值点(<= 0 或数据为空则不做)
-     * @note 收字节指针而不是 int16_t*, 是因为调用方的缓冲(std::vector<uint8_t>、
-     *       设备回调的 char[])并不保证 2 字节对齐, 直接转型访问是未定义行为;
-     *       这里内部逐采样 memcpy, 由编译器优化成单条 load, 对任意对齐都安全。
-     *       每点覆盖 sampleCount/points 个采样; 尾部不足一点的数据会并入最后一个点,
-     *       保证所有采样都被算进去(不丢尾部数据)。
-     */
     static void ComputePeaks(const void* pcm16le, size_t byteCount, float* out, int points);
+
+    static bool BuildFilePeaks(const char* utf8Path, size_t payloadOffset, size_t dataSize,
+                               bool bEncrypted, float* out, int points);
 };
