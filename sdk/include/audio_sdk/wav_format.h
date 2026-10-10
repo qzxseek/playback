@@ -5,6 +5,7 @@
 #pragma once
 #include <cstdint>
 #include <fstream>
+#include <string>
 
 #include "audio_sdk/audio_types.h"
 #include "audio_sdk/audio_export.h"
@@ -63,7 +64,7 @@ public:
     AudioSdk::AudioSdkState Open(const char* utf8Path, bool bEncrypt);
 
     // 追加一块 PCM
-    bool Write(void* pcm, size_t n);
+    AudioSdk::AudioSdkState Write(void* pcm, size_t n);
     bool Finish();
 
     uint64_t Written() const { return m_written; }
@@ -73,4 +74,5 @@ private:
     bool           m_encrypt = false;
     uint64_t       m_written = 0;       // 已写 PCM 字节数(也是下一块的 XOR 偏移)
     std::streamoff m_headerPos = 0;     // 44 字节 WAV 头在文件里的偏移
+    std::string    m_path;              // 落盘路径: 写失败时用它查剩余空间 + 记日志
 };

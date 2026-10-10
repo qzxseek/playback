@@ -334,11 +334,12 @@ void CAudioRecorder::Impl::OnBufferDone(WAVEHDR* hdr) {
    
    if (!m_isRecording.load(std::memory_order_acquire)) return;
 
-   // 边录边写, 写不进说明内存已满
-   if (!m_writer.Write(hdr->lpData, hdr->dwBytesRecorded)) {
+   // 边录边写, 写不进说明盘满/设备出错，可看日志
+   auto ret = m_writer.Write(hdr->lpData, hdr->dwBytesRecorded);
+   if (ret != AudioSdk::AudioSdkState::NONE) {
       int iExpected = 0;
       m_writeErr.compare_exchange_strong(iExpected,
-         static_cast<int>(AudioSdk::AudioSdkState::FILE_WRITE_FAILED),
+         static_cast<int>(ret),
          std::memory_order_relaxed);
       return;      
    }

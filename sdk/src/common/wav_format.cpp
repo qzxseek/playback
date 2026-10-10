@@ -4,7 +4,9 @@
 */
 #include "audio_sdk/wav_format.h"   // 内含 audio_types.h
 #include "audio_sdk/encrypted_format.h"   // bEncrypt=true 时委托存成 .aenc 容器
+#include "audio_sdk/logging.h"
 
+#include <cerrno>   // errno / ENOSPC: 写失败时判是不是盘满
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -12,6 +14,8 @@
 #include <filesystem>
 #include <fstream>
 #include <new>      // std::bad_alloc
+
+static constexpr const char* kTag = "wav";   // 日志来源标记
 
 /**
  * @brief 填充 WAV 文件头
@@ -65,6 +69,7 @@ AudioSdk::AudioSdkState CWavStreamWriter::Open(const char* utf8Path, bool bEncry
         m_encrypt = bEncrypt;
         m_written = 0;
         m_headerPos = 0;
+        m_path = utf8Path;          // 写失败时要用它查剩余空间 + 记日志
 
         if (bEncrypt) {             // .aenc 壳: 魔数 + 版本, 排在 WAV 头前面
             m_file.write(CEncryptedFormat::kAencMagic, CEncryptedFormat::kAencMagicSize);
@@ -99,13 +104,13 @@ AudioSdk::AudioSdkState CWavStreamWriter::Open(const char* utf8Path, bool bEncry
  * @brief 追加一块 PCM(加密时就地 XOR, 不额外拷贝)
  * @param pcm PCM 数据, 会被就地加密改写
  * @param n 字节数
- * @return true = 已写进文件; false = 没打开或没写进去(调用方据此停采)
+ * @return NONE = 已写进文件; FILE_OPEN_FAILED = 没打开; FILE_WRITE_FAILED = 写不进去
  */
-bool CWavStreamWriter::Write(void* pcm, size_t n){
+AudioSdk::AudioSdkState CWavStreamWriter::Write(void* pcm, size_t n){
     if (!m_file.is_open())
-        return false;
+        return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
     if (n == 0)
-        return true;                // 空块不算失败(录音刚起可能给出 0 字节的块)
+        return AudioSdk::AudioSdkState::NONE;                // 空块不算失败(录音刚起可能给出 0 字节的块)
 
     uint8_t* p = static_cast<uint8_t*>(pcm);
     if (m_encrypt)
@@ -114,13 +119,27 @@ bool CWavStreamWriter::Write(void* pcm, size_t n){
     try {
         m_file.write(reinterpret_cast<const char*>(p), static_cast<std::streamsize>(n));
     } catch (const std::bad_alloc&) {
-        return false;              // 文件缓冲扩容失败(Open 后本不该再分配, 兜底)
+        return AudioSdk::AudioSdkState::OUT_OF_MEMORY;      // 缓冲扩容失败(Open 后本不该再分配, 兜底)
     }
-    if (!m_file.good())
-        return false;              // 盘满/设备出错: 不抛异常, 只能靠流状态看
+
+    if (!m_file.good()) {
+        
+        const int err = errno;
+        std::error_code ec;
+        const std::filesystem::space_info sp = std::filesystem::space(m_path, ec);
+        const unsigned long long availMB =
+            ec ? 0ULL : static_cast<unsigned long long>(sp.available / 1048576ULL);
+
+        AUDIO_LOG_ERROR(kTag, "写失败 \"%s\": errno=%d%s%s, 已写 %llu 字节, 本次 %zu 字节, 剩余 %lluMB",
+                        m_path.c_str(), err,
+                        err == ENOSPC ? " [ENOSPC 磁盘空间不足]" : "",
+                        ec ? " [拿不到剩余空间]" : "",
+                        static_cast<unsigned long long>(m_written), n, availMB);
+        return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;
+    }
 
     m_written += n;
-    return true;
+    return AudioSdk::AudioSdkState::NONE;
 }
 
 /**

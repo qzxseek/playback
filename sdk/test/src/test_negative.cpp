@@ -410,7 +410,8 @@ static void TestStreamWriterErrors() {
     {
         CWavStreamWriter w;
         CHECK(w.Written() == 0, "没 Open 时 Written() 为 0");
-        CHECK(!w.Write(pcm, sizeof(pcm)), "没 Open 就 Write → false");
+        CHECK(w.Write(pcm, sizeof(pcm)) == AudioSdk::AudioSdkState::FILE_OPEN_FAILED,
+              "没 Open 就 Write → FILE_OPEN_FAILED");
         CHECK(w.Finish(), "没 Open 就 Finish → true(本来就没东西要落)");
     }
 
@@ -424,7 +425,8 @@ static void TestStreamWriterErrors() {
         CHECK(w.Open("no_such_dir_zzz/x.wav", false)
                   == AudioSdk::AudioSdkState::FILE_OPEN_FAILED,
               "目录不存在 → FILE_OPEN_FAILED");
-        CHECK(!w.Write(pcm, sizeof(pcm)), "Open 失败之后 Write 仍是 false");
+        CHECK(w.Write(pcm, sizeof(pcm)) == AudioSdk::AudioSdkState::FILE_OPEN_FAILED,
+              "Open 失败之后 Write 仍是 FILE_OPEN_FAILED");
     }
 
     // ---- 空块不算失败: 设备刚起时给 0 字节的块是正常现象 ----
@@ -434,7 +436,7 @@ static void TestStreamWriterErrors() {
 
         CWavStreamWriter w;
         CHECK(w.Open(path.c_str(), false) == AudioSdk::AudioSdkState::NONE, "空录音: Open 成功");
-        CHECK(w.Write(pcm, 0), "写 0 字节不算失败");
+        CHECK(w.Write(pcm, 0) == AudioSdk::AudioSdkState::NONE, "写 0 字节不算失败");
         CHECK(w.Written() == 0, "写 0 字节不改已写字节数");
         CHECK(w.Finish(), "空录音: Finish 成功");
 
@@ -446,6 +448,51 @@ static void TestStreamWriterErrors() {
         }
         std::remove(path.c_str());
     }
+}
+
+/**
+ * @brief 写真的失败时, Write 必须报出来 —— 不能静默返回"成功"
+ *
+ * 这条是给一个反复踩到的坑站岗: ofstream 默认 exceptions()==0, write 失败【不抛异常】,
+ * 只把 badbit 置起来。于是 "try/catch 包住 write" 和 "write 后无条件 throw" 两种写法
+ * 都能让这段代码坏掉 —— 前者永远报成功, 后者永远报失败。只有 good() 是对的。
+ *
+ * 造失败的手法: 把文件开在一个"服务端已关"的命名管道上。它和盘满(ENOSPC)在 CRT 里
+ * 走同一条 _Fwrite 失败路径, 流层反应完全一致, 不用真去填满一块盘。
+ */
+static void TestWriteFailureReported() {
+#if defined(_WIN32)
+    const wchar_t* kPipe = L"\\\\.\\pipe\\wav_writer_test";
+    HANDLE hSrv = ::CreateNamedPipeW(kPipe, PIPE_ACCESS_INBOUND,
+        PIPE_TYPE_BYTE | PIPE_WAIT, 1, 4096, 4096, 0, nullptr);
+    if (hSrv == INVALID_HANDLE_VALUE) { tst::Skip("写失败上报", "建命名管道失败"); return; }
+
+    CWavStreamWriter w;
+    // 路径是 ASCII, u8path 不涉及转码; Open 时管道还在, 占位头能写进去
+    const AudioSdk::AudioSdkState st = w.Open("\\\\.\\pipe\\wav_writer_test", false);
+    if (st != AudioSdk::AudioSdkState::NONE) {
+        ::CloseHandle(hSrv);
+        tst::Skip("写失败上报", "打不开管道");
+        return;
+    }
+    ::CloseHandle(hSrv);              // 服务端一关, 写端此后每次 WriteFile 都失败
+
+    uint8_t pcm[8192];
+    std::memset(pcm, 0xAA, sizeof(pcm));
+
+    // 反复写直到失败: ofstream 有缓冲, 头几次可能还在缓冲里没落到底层
+    bool reported = false;
+    size_t tries = 0;
+    for (; tries < 64; ++tries) {
+        if (w.Write(pcm, sizeof(pcm)) != AudioSdk::AudioSdkState::NONE) { reported = true; break; }
+    }
+    CHECK(reported, "写不进去时 Write 报出错(不是静默成功)");
+    CHECK(tries < 64, "失败在头几次写内就被发现(不是拖到最后)");
+    CHECK(w.Written() == tries * sizeof(pcm),
+          "失败那一块没有被计进 Written() —— 字节数不能凭空涨");
+#else
+    std::printf("  [skip] 命名管道是 Windows 专属\n");
+#endif
 }
 
 int main() {
@@ -468,5 +515,6 @@ int main() {
     RUN(TestNameDisguise);
     RUN(TestSaveToUnwritablePath);
     RUN(TestStreamWriterErrors);
+    RUN(TestWriteFailureReported);
     return tst::Summary("反向");
 }

@@ -228,7 +228,7 @@ static void TestStreamPlumbing() {
                 const size_t n = (std::min)(sizes[i % 4], pcmBytes - pos);
                 // Write 会就地把明文改成密文 —— 别把基线还要用的那份明文喂进去
                 std::vector<uint8_t> chunk(pcm + pos, pcm + pos + n);
-                if (!w.Write(chunk.data(), n)) { ok = false; break; }
+                if (w.Write(chunk.data(), n) != AudioSdk::AudioSdkState::NONE) { ok = false; break; }
                 pos += n;
             }
             CHECK(ok, "流式写: 每一块都写进去了");
@@ -275,7 +275,7 @@ static void TestStreamPlumbing() {
         bool ok = true;
         for (size_t off = 0; off < big.size(); off += 4096) {
             const size_t n = (std::min)(size_t{4096}, big.size() - off);
-            if (!w.Write(big.data() + off, n)) { ok = false; break; }
+            if (w.Write(big.data() + off, n) != AudioSdk::AudioSdkState::NONE) { ok = false; break; }
         }
         CHECK(ok, "增量: 256KB 全部写入");
 

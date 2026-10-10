@@ -299,11 +299,12 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
         }
     }
 
-    // 边录边写盘
-    if (!m_writer.Write(audioData, bytes)) {
+    // 边录边写盘, 写不进说明盘满/设备出错，可看日志
+    auto ret = m_writer.Write(audioData, bytes);
+    if (ret != AudioSdk::AudioSdkState::NONE) {
         int iExpected = 0;
         m_writeErr.compare_exchange_strong(iExpected,
-            static_cast<int>(AudioSdk::AudioSdkState::FILE_WRITE_FAILED),
+            static_cast<int>(ret),
             std::memory_order_relaxed);
         return AAUDIO_CALLBACK_RESULT_STOP;
     }
