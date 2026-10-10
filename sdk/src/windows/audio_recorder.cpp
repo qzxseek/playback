@@ -391,6 +391,13 @@ bool CAudioRecorder::GetIsPaused() const{
 }
 
 /**
+ * @brief 录制途中的写失败状态码(NONE = 没失败)
+ */
+AudioSdk::AudioSdkState CAudioRecorder::GetWriteError() const{
+   return static_cast<AudioSdk::AudioSdkState>(m_impl->m_writeErr.load(std::memory_order_relaxed));
+}
+
+/**
  * @brief 已录制时长(毫秒) —— 已录字节 ÷ 每秒字节数
  * @return 毫秒
  */

@@ -213,13 +213,15 @@ private:
 
     bool m_recBusy = false;           // 录音设备忙碌判断
     bool m_playBusy = false;          // 播放设备忙碌判断
-   
+
     // 每 lane 当前会话的录音器句柄(Start 时记, Stop 投出时取走)
     void* m_laneRec[2] = { nullptr, nullptr };
     int   m_activeLane = 0;           // 正在进行的会话用的 lane 号
  
     void* m_savingHandle[2] = { nullptr, nullptr };
     std::wstring m_lanePath[2];       // 各 lane 当前会话的输出路径(保存完成提示用)
+
+    bool m_recWriteAbort[2] = { false, false };      // 判断线程落盘状态是否有问题
 
     unsigned m_outputSeq = 0;         // 输出文件名序号(单调递增, 保证同秒内也不重名)
 

@@ -358,6 +358,16 @@ int CAudioRecorder::ReadWave(float* outMinMax, int maxPoints) {
 bool CAudioRecorder::GetIsPaused() const { return m_impl->m_isPaused; }
 
 /**
+ * @brief 录制途中的写失败状态码(NONE = 没失败)
+ * @note 与 Windows 侧同一套语义(见 audio_recorder.h): 只读标记, 收尾仍归
+ *       调用方的 StopRecording —— 这里不能顺手把状态改成"没在录"
+ */
+AudioSdk::AudioSdkState CAudioRecorder::GetWriteError() const {
+    return static_cast<AudioSdk::AudioSdkState>(
+        m_impl->m_writeErr.load(std::memory_order_relaxed));
+}
+
+/**
  * @brief 已录制时长(毫秒) —— 已录字节 ÷ 每秒字节数
  * @return 毫秒
  * @note 录音格式固定(见 audio_types.h), 所以字节率直接用常量算,

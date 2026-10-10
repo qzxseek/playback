@@ -548,6 +548,9 @@ void CMainWindows::AudioStartStopRec(){
         void* handle = m_laneRec[lane];                 // 本会话对象(Start 时记下的)
         m_laneRec[lane] = nullptr;
 
+        // 记录下写盘状态
+        m_recWriteAbort[lane] = (m_recApi.RecorderGetWriteError(handle) != 0);
+
         m_isRecording  = false;
         m_recPaused    = false;
         m_savingHandle[lane] = handle;                  // 落盘结果回来时按 lane 终读它的波形尾巴
@@ -604,6 +607,10 @@ void CMainWindows::OnSdkDone(UINT op, UINT lane, int state){
     }
 
     if (op == Cmd::RecStop){
+        // 取走状态通知UI，更新状态
+        const bool writeAbort = m_recWriteAbort[lane];
+        m_recWriteAbort[lane] = false;
+
         // 设备已停、数据已写盘。波形尾巴归本会话对象所有, 从它那里终读最后一次。
         // 按 lane 取句柄: 另一条 lane 可能也在落盘, 各认各的会话对象。
         if (m_savingHandle[lane]){
@@ -630,6 +637,13 @@ void CMainWindows::OnSdkDone(UINT op, UINT lane, int state){
             // 设备中途被拔: 文件确实存下来了, 只是这一轮不完整。
             // 说"保存失败"是误导(文件在), 说"已保存"也不对(用户会以为录全了)。
             MessageBoxW(m_hwnd, L"录音设备被断开，数据不完整（已保存录到的部分）",
+                        L"录音", MB_OK | MB_ICONWARNING);
+        else if (writeAbort)
+            // 盘满/磁盘出错把这一轮打断了(定时器发现后替用户停的)。
+            // 文件是收尾正常写完的, 只是个短 —— 所以提示里要带真实文件名,
+            // 用户要能直接去清盘或改输出目录, 光说"失败"他不知道东西在哪。
+            MessageBoxW(m_hwnd, L"录音中断：磁盘写不进去（通常是空间不足），"
+                                L"数据不完整（已保存录到的部分）。\n请清理磁盘或换个输出目录后重录。",
                         L"录音", MB_OK | MB_ICONWARNING);
         else if (state != static_cast<int>(AudioSdk::AudioSdkState::NONE))
             MessageBoxW(m_hwnd, L"录音保存失败", L"录音", MB_OK | MB_ICONERROR);
@@ -876,6 +890,11 @@ void CMainWindows::OnTimerTick(){
     // 录音中: 已录字节 ×10 ÷ 每秒字节数 = 十分之一秒数
     if (!SdkReady()) return;                       // dll 没加载, 定时器空转就行
     if (m_isRecording){
+        // 写失败，即刻停止录音，并通知UI
+        if (m_recApi.RecorderGetWriteError(m_recorderHandle) != 0){
+            AudioStartStopRec();          // 此时 m_isRecording 还是 true → 走停止分支
+            return;
+        }
         // 已录时长同样问 SDK 要毫秒, UI 不自己按采样率算
         UpdateRecTimeUI(m_recApi.RecorderGetRecordedMs(m_recorderHandle));
         // 波形: 音频线程只往 SDK 自己的环里写, 这里(UI 线程)每 100ms 拉一次

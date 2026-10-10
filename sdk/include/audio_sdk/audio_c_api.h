@@ -91,6 +91,7 @@ AUDIO_API void AudioSdk_RecorderSetAencEncrypt(void* handle);
 AUDIO_API int      AudioSdk_RecorderGetAencEncrypt(void* handle);    // 1=加密保存
 AUDIO_API int      AudioSdk_RecorderGetIsPaused(void* handle);       // 1=已暂停
 AUDIO_API uint32_t AudioSdk_RecorderGetRecordedMs(void* handle);     // 已录时长(毫秒)
+AUDIO_API int      AudioSdk_RecorderGetWriteError(void* handle);
 
 // 取走尚未读过的录音波形点(拉模式)
 AUDIO_API int AudioSdk_RecorderReadWave(void* handle, float* outMinMax, int maxPoints);

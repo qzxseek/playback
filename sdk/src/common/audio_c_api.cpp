@@ -152,6 +152,11 @@ AUDIO_API int AudioSdk_RecorderGetIsPaused(void* handle) {      // 1=已暂停
     return (handle && AsRecorder(handle)->GetIsPaused()) ? 1 : 0;
 }
 
+AUDIO_API int AudioSdk_RecorderGetWriteError(void* handle) {
+    return handle ? static_cast<int>(AsRecorder(handle)->GetWriteError())
+                  : static_cast<int>(AudioSdk::AudioSdkState::NONE);
+}
+
 // 已录时长(毫秒) —— UI 显示录音时长直接用
 AUDIO_API uint32_t AudioSdk_RecorderGetRecordedMs(void* handle) {
     return handle ? AsRecorder(handle)->GetRecordedMs() : 0;

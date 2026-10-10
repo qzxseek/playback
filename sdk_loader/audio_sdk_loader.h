@@ -50,6 +50,7 @@ struct AudioRecSdkApi{
     decltype(&::AudioSdk_RecorderGetAencEncrypt)  RecorderGetAencEncrypt  = nullptr;
     decltype(&::AudioSdk_RecorderGetIsPaused)     RecorderGetIsPaused     = nullptr;
     decltype(&::AudioSdk_RecorderGetRecordedMs)   RecorderGetRecordedMs   = nullptr;
+    decltype(&::AudioSdk_RecorderGetWriteError)   RecorderGetWriteError   = nullptr;
     decltype(&::AudioSdk_RecorderReadWave)        RecorderReadWave        = nullptr;
     decltype(&::AudioSdk_IsAencFile)              IsAencFile              = nullptr;
 
@@ -79,6 +80,7 @@ struct AudioRecSdkApi{
       AUDIO_SDK_LOAD(RecorderGetAencEncrypt,  "AudioSdk_RecorderGetAencEncrypt");
       AUDIO_SDK_LOAD(RecorderGetIsPaused,     "AudioSdk_RecorderGetIsPaused");
       AUDIO_SDK_LOAD(RecorderGetRecordedMs,   "AudioSdk_RecorderGetRecordedMs");
+      AUDIO_SDK_LOAD(RecorderGetWriteError,   "AudioSdk_RecorderGetWriteError");
       AUDIO_SDK_LOAD(RecorderReadWave,        "AudioSdk_RecorderReadWave");
       AUDIO_SDK_LOAD(IsAencFile,              "AudioSdk_IsAencFile");
 

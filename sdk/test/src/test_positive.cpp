@@ -405,6 +405,8 @@ static void TestRecordPipeline() {
     CHECK(st == AudioSdk::AudioSdkState::NONE, "StartRecording 返回 NONE");
     if (st != AudioSdk::AudioSdkState::NONE) return;
 
+    CHECK(rec.GetWriteError() == AudioSdk::AudioSdkState::NONE, "录制中 WriteError 为 NONE");
+
     ::Sleep(seconds * 1000);
 
     const uint32_t recordedMs = rec.GetRecordedMs();
@@ -413,6 +415,8 @@ static void TestRecordPipeline() {
           "已录时长 ≈ 实际经过时间");
 
     CHECK(rec.StopRecording() == AudioSdk::AudioSdkState::NONE, "StopRecording 返回 NONE");
+    // 取走即清: 这一轮没出过事, 收尾之后也不能留下痕迹影响下一轮
+    CHECK(rec.GetWriteError() == AudioSdk::AudioSdkState::NONE, "收尾后 WriteError 复位");
 
     const std::vector<uint8_t> buf = tst::ReadAll(file);
     CHECK(!buf.empty(), "落盘文件存在且非空");

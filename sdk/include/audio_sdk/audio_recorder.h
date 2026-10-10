@@ -31,6 +31,8 @@ public:
     bool GetIsPaused() const;                   // 是否暂停
     uint32_t GetRecordedMs() const;             // 已录制时长(毫秒)
 
+    AudioSdk::AudioSdkState GetWriteError() const;   // 获取入盘状态
+
     // 取走尚未读过的录音波形点(拉模式, 语义见 AudioSdk_RecorderReadWave)。
     // 任意线程可调, 但不要与 StartRecording 并发 —— 那会重置内部环形缓冲。
     int ReadWave(float* outMinMax, int maxPoints);
