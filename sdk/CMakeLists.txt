@@ -70,6 +70,10 @@ if(WIN32)
     )
 endif()
 
+# 音频编码解码库
+list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows/vorbis")
+find_package(Vorbis CONFIG REQUIRED)
+target_link_libraries(audio_sdk PRIVATE Vorbis::vorbisenc Vorbis::vorbisfile)
 # ---------------------------------------------------------------------------
 # 测试
 # ---------------------------------------------------------------------------
