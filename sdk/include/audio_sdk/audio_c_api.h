@@ -43,7 +43,7 @@ AUDIO_API void* AudioSdk_PlayerCreate(void);
 // 销毁播放器对象(句柄可传 NULL, 安全)
 AUDIO_API void AudioSdk_PlayerDestroy(void* handle);
 
-// 打开并播放 .wav/.aenc(UTF-8 路径); 返回 AudioSdkState 的序号
+// 打开并播放 .wav/.aenc/.ogg/.aogg(UTF-8 路径, 按文件头自动分流); 返回 AudioSdkState 的序号
 AUDIO_API int AudioSdk_PlayerPlayFile(void* handle, const char* utf8Path);
 
 AUDIO_API void AudioSdk_PlayerPausePlay(void* handle);
@@ -60,7 +60,6 @@ AUDIO_API uint32_t AudioSdk_PlayerGetPlayPosMs(void* handle);   // 当前播放�
 AUDIO_API uint32_t AudioSdk_PlayerGetTotalPosMs(void* handle);  // 总时长(毫秒); 未加载文件为 0
 
 // 取整个文件的波形(降采样成 CWaveform::kFilePoints 个峰值点)。
-// 在【调用线程】同步回调一次(通常就是 UI 线程), 无并发问题。
 // 回调返回后缓冲即失效, 需要就自己拷走。
 AUDIO_API void AudioSdk_PlayerBuildWaveform(void* handle,
                                             AudioSdkWaveCallback cb,
@@ -84,6 +83,10 @@ AUDIO_API void AudioSdk_RecorderPauseResume(void* handle);
 AUDIO_API int AudioSdk_RecorderStop(void* handle);
 
 AUDIO_API void AudioSdk_RecorderSetOutputPath(void* handle, const char* utf8Path);
+
+// 落盘容器
+AUDIO_API void AudioSdk_RecorderSetFormat(void* handle, int format);
+AUDIO_API int  AudioSdk_RecorderGetFormat(void* handle);          // 返回 AudioSdkFormat 序号
 
 // 切换加密开关(录制中不生效)
 AUDIO_API void AudioSdk_RecorderSetAencEncrypt(void* handle);

@@ -10,6 +10,10 @@ CompileFlags:
     - -IC:/Users/admin/Desktop/exam_sdk/sdk/include
     # 日志是独立子树(logging/include/audio_sdk/logging.h), 不在 sdk/include 下
     - -IC:/Users/admin/Desktop/exam_sdk/sdk/logging/include
+    # 第三方依赖随仓库走(src/platform/windows/vorbis), 与 CMake 里那个 CMAKE_PREFIX_PATH 同一个目录。
+    # 归在 platform/windows 下是因为暂时只有 Windows 有这份库; Android 将来放 platform/android。
+    # 这里只能写绝对路径: clangd 的 -I 是相对它自己的启动目录解释的, 写相对路径会飘。
+    - -IC:/Users/admin/Desktop/exam_sdk/sdk/src/platform/windows/vorbis/include
     - -isystem
     - C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/VC/Tools/MSVC/14.29.30133/include
     - -isystem

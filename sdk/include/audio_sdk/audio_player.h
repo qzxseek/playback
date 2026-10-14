@@ -20,7 +20,7 @@ public:
     CAudioPlayer(const CAudioPlayer&) = delete;
     CAudioPlayer& operator=(const CAudioPlayer&) = delete;
 
-    // 打开并播放 .wav/.aenc(自动分流)。filePath 约定 UTF-8 编码。
+    // 打开并播放 .wav/.aenc/.ogg/.aogg(按文件头自动分流)。filePath 约定 UTF-8 编码。
     AudioSdk::AudioSdkState PlayWavFile(const char* utf8Path);
 
     void PausePlay();              // 暂停播放
@@ -34,7 +34,6 @@ public:
     uint32_t GetTotalPosMs() const;     // 总时长(毫秒); 未加载文件返回 0
 
     // 取整个文件的波形(降采样成 CWaveform::kFilePoints 个峰值点)。
-    // 在【调用线程】同步回调一次(通常是 UI 线程), 没有并发问题。
     // 未加载文件 / 传 NULL 时不会调用。回调返回后 minmax 缓冲即失效, 需要就自己拷走。
     void BuildWaveform(AudioSdkWaveCallback cb, void* userData);
     bool GetIsPaused() const;           // 获取是否暂停播放

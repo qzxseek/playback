@@ -20,7 +20,7 @@
 
 
 #define AUDIO_SDK_WAVE_BLOCK_POINTS  256              // 每块(AUDIO_SDK_BLOCK_MS 的时长)积出这么多个点
-#define AUDIO_SDK_WAVE_FILE_POINTS   1024             // 整个文件的波形, 一次给这么多个点
+#define AUDIO_SDK_WAVE_FILE_POINTS   1024             // 整个文件的波形, 横向一共分这么多个点
 
 // 录音侧波形的传输容量(见 wave_ring.h 的 CWaveRing)。
 // 4096 点 ≈ 1.6 秒 —— 调用方在最坏情况下落后这么久也还能按序取全;
@@ -32,12 +32,20 @@ static_assert(AUDIO_SDK_WAVE_BLOCK_POINTS <= AUDIO_SDK_WAVE_RING_POINTS,
               "每块点数不能超过波形环容量 AUDIO_SDK_WAVE_RING_POINTS");
 
 // 波形回调: 把降采样后的峰值对交给调用方画波形
-//   minmax: [min0, max0, min1, max1, ...] 已归一化到 [-1, 1], 共 points*2 个 float
-//   points: 峰值点个数
+//   minmax: [min0, max0, min1, max1, ...] 已归一化到 [-1, 1], 前 points*2 个 float 有效
+//   points: 【本次有效】的峰值点个数 —— 注意可能一次比一次多, 见下
 //   userData: 注册回调时原样透传的指针
 //
+// 【可能来多次】AudioSdk_PlayerBuildWaveform 的回调不保证只来一次:
+//   - WAV  一次给全(AUDIO_SDK_WAVE_FILE_POINTS 个点), 快, 没必要分次
+//   - Ogg  解一段报一段, points 从少到多长到 AUDIO_SDK_WAVE_FILE_POINTS
+// 两次回调之间缓冲内容不变的部分是一样的, 只有新算出来的那截从 0 变成真值。
+// 所以调用方每次拿到就照 points 画(而不是按总点数铺满宽度), 效果就是从少到多
+// "从左往右长出来"; 想省事也可以只等最后一次, 只是大文件要干等。
+//
 // 【目前只有播放器用它】—— AudioSdk_PlayerBuildWaveform 在【调用线程】同步跑完,
-// 没有并发: 回调体里想怎么用都行(画界面、调 JNI、分配内存都可以)。
+// 没有并发(多次回调也是同一个线程顺序发生的): 回调体里想怎么用都行
+// (画界面、调 JNI、分配内存都可以)。
 //
 // 【录音不在这里】录音波形走的是"拉模式", 不走回调 —— 因为录音的峰值是音频线程
 // 算出来的, 而这个回调类型不携带任何线程信息, 一旦有调用方把自己的代码挂到音频
@@ -63,3 +71,10 @@ enum class AudioSdkState
     UNKNOWN_ERROR,         // 未知错误
 };
 }
+
+enum class AudioSdkFormat
+{
+    OGG,
+    OPUS,
+    WAV,
+};

@@ -46,6 +46,8 @@ struct AudioRecSdkApi{
     decltype(&::AudioSdk_RecorderPauseResume)     RecorderPauseResume     = nullptr;
     decltype(&::AudioSdk_RecorderStop)            RecorderStop            = nullptr;
     decltype(&::AudioSdk_RecorderSetOutputPath)   RecorderSetOutputPath   = nullptr;
+    decltype(&::AudioSdk_RecorderSetFormat)       RecorderSetFormat       = nullptr;
+    decltype(&::AudioSdk_RecorderGetFormat)       RecorderGetFormat       = nullptr;
     decltype(&::AudioSdk_RecorderSetAencEncrypt)  RecorderSetAencEncrypt  = nullptr;
     decltype(&::AudioSdk_RecorderGetAencEncrypt)  RecorderGetAencEncrypt  = nullptr;
     decltype(&::AudioSdk_RecorderGetIsPaused)     RecorderGetIsPaused     = nullptr;
@@ -76,6 +78,8 @@ struct AudioRecSdkApi{
       AUDIO_SDK_LOAD(RecorderPauseResume,     "AudioSdk_RecorderPauseResume");
       AUDIO_SDK_LOAD(RecorderStop,            "AudioSdk_RecorderStop");
       AUDIO_SDK_LOAD(RecorderSetOutputPath,   "AudioSdk_RecorderSetOutputPath");
+      AUDIO_SDK_LOAD(RecorderSetFormat,       "AudioSdk_RecorderSetFormat");
+      AUDIO_SDK_LOAD(RecorderGetFormat,       "AudioSdk_RecorderGetFormat");
       AUDIO_SDK_LOAD(RecorderSetAencEncrypt,  "AudioSdk_RecorderSetAencEncrypt");
       AUDIO_SDK_LOAD(RecorderGetAencEncrypt,  "AudioSdk_RecorderGetAencEncrypt");
       AUDIO_SDK_LOAD(RecorderGetIsPaused,     "AudioSdk_RecorderGetIsPaused");

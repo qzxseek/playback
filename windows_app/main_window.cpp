@@ -92,7 +92,7 @@ void CMainWindows::RecWorkerLoop(CMainWindows* self, int lane){
 }
 
 /**
- * @brief 播放链主循环: PlayFile + BuildWaveform 都在本线程跑完再回报
+ * @brief 播放链主循环: PlayFile 先回报, 波形在本线程继续算
  * @param self 实例指针
  */
 void CMainWindows::PlayWorkerLoop(CMainWindows* self){
@@ -104,14 +104,16 @@ void CMainWindows::PlayWorkerLoop(CMainWindows* self){
 
         const std::string utf8Path = WideToUtf8(cmd.path);
         const int st = self->m_playApi.PlayerPlayFile(self->m_playerHandle, utf8Path.c_str());
-        if (st == static_cast<int>(AudioSdk::AudioSdkState::NONE)){
-            // 整段波形: 回调跑在本线程, 数据经锁拷进成员(UI 画的时候再拷出)
+        if (st == static_cast<int>(AudioSdk::AudioSdkState::NONE))
             self->CopyFileWave(nullptr, 0);           // 先清掉上一个文件的波形
-            self->m_playApi.PlayerBuildWaveform(self->m_playerHandle,
-                                                &CMainWindows::OnWaveFromFile, self);
-        }
+
         ::PostMessage(self->m_hwnd, WM_APP_SDK_DONE,
                       MAKEWPARAM(Cmd::PlayFile, 0), static_cast<LPARAM>(st));
+
+        // 波形: 回调跑在本线程, 数据经锁拷进成员; UI 那边每 100ms 拷出来画一次
+        if (st == static_cast<int>(AudioSdk::AudioSdkState::NONE))
+            self->m_playApi.PlayerBuildWaveform(self->m_playerHandle,
+                                                &CMainWindows::OnWaveFromFile, self);
     }
 }
 
@@ -285,6 +287,7 @@ void* CMainWindows::TakeRecorder(std::wstring& outPath){
         // 新建对象的加密开关要跟 UI 勾选状态对齐(SDK 默认开)
         if (!m_encryptOn)
             m_recApi.RecorderSetAencEncrypt(h);
+        m_recApi.RecorderSetFormat(h, static_cast<int>(m_recFormat));
     }
     return h;
 }
@@ -340,6 +343,13 @@ void CMainWindows::CreateControls(HWND hwnd){
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
         Layout::kEncX, Layout::kRecRowTop, Layout::kSmallBtnW, Layout::kRowHeight,
         hwnd, (HMENU)(INT_PTR)BTN_ENCRYPT, hInst, NULL);
+    m_hCmbFormat = CreateWindowEx(0, L"COMBOBOX", NULL,
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
+        Layout::kFmtX, Layout::kRecRowTop, Layout::kFmtW, 200,
+        hwnd, (HMENU)(INT_PTR)CMB_REC_FORMAT, hInst, NULL);
+    SendMessageW(m_hCmbFormat, CB_ADDSTRING, 0, (LPARAM)L"WAV");
+    SendMessageW(m_hCmbFormat, CB_ADDSTRING, 0, (LPARAM)L"OGG");
+    SendMessageW(m_hCmbFormat, CB_SETCURSEL, 0, 0);   // 默认第 0 项 = WAV, 与 m_recFormat 初值一致
     m_hLblRecTime = CreateWindowEx(0, L"STATIC", L"录音时长: 00:00.0",
         WS_CHILD | WS_VISIBLE | SS_RIGHT,
         Layout::kTextColX, Layout::kRecRowTop + Layout::kLabelInset,
@@ -376,6 +386,7 @@ void CMainWindows::CreateControls(HWND hwnd){
     if (!SdkReady()){
         EnableWindow(m_hBtnRec_Start_Stop, FALSE);
         EnableWindow(m_hChkEnc, FALSE);
+        EnableWindow(m_hCmbFormat, FALSE);
         return;
     }
     // 勾选框初始状态: UI 侧记录的加密开关(与每会话新建对象时套用的值一致, 默认开)
@@ -415,8 +426,9 @@ LRESULT CMainWindows::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         case WM_COMMAND: {
             const int iId = LOWORD(wParam);
-            if (HIWORD(wParam) == BN_CLICKED)
-            OnCommand(iId);
+            const UINT code = HIWORD(wParam);
+            if (code == BN_CLICKED || code == CBN_SELCHANGE)
+                OnCommand(iId);
         return 0;
     }
 
@@ -502,6 +514,10 @@ void CMainWindows::OnCommand(int iId){
         SendMessageW(m_hChkEnc, BM_SETCHECK,
                      m_encryptOn ? BST_CHECKED : BST_UNCHECKED, 0);
         break;
+    case CMB_REC_FORMAT:                   // 落盘格式下拉(只有 WAV / OGG 两项)
+        m_recFormat = (SendMessageW(m_hCmbFormat, CB_GETCURSEL, 0, 0) == 1)
+                          ? AudioSdkFormat::OGG : AudioSdkFormat::WAV;
+        break;
     case BTN_OPEN_FILE:
         OpenFileDialog(m_hwnd);
         break;
@@ -559,6 +575,7 @@ void CMainWindows::AudioStartStopRec(){
         SetWindowTextW(m_hBtnRecPause, L"暂停录音");
         EnableWindow(m_hBtnRecPause, FALSE);
         EnableWindow(m_hChkEnc, TRUE);
+        EnableWindow(m_hCmbFormat, TRUE);
         EnableWindow(m_hBtnOpen, TRUE);
         if (!m_curFile.empty() && !m_playBusy)
             EnableWindow(m_hBtnPlay_Start_Stop, TRUE);
@@ -598,6 +615,7 @@ void CMainWindows::OnSdkDone(UINT op, UINT lane, int state){
             SetWindowTextW(m_hBtnRec_Start_Stop, L"停止录音");
             EnableWindow(m_hBtnRecPause, TRUE);
             EnableWindow(m_hChkEnc, FALSE);          // 录制中不能改加密
+            EnableWindow(m_hCmbFormat, FALSE);       // 同理, 这一轮录成什么开录前就已定死
             EnableWindow(m_hBtnOpen, FALSE);         // 录音时禁用播放区
             EnableWindow(m_hBtnPlay_Start_Stop, FALSE);
             EnableWindow(m_hBtnPlayPause, FALSE);
@@ -648,8 +666,11 @@ void CMainWindows::OnSdkDone(UINT op, UINT lane, int state){
         else if (state != static_cast<int>(AudioSdk::AudioSdkState::NONE))
             MessageBoxW(m_hwnd, L"录音保存失败", L"录音", MB_OK | MB_ICONERROR);
         else{
-            swprintf_s(msg, std::size(msg), L"录音已保存为 %s%s",
-                       name.c_str(), m_encryptOn ? L".aenc" : L".wav");
+            // 后缀由"容器 + 加不加密"两维决定
+            const wchar_t* ext = (m_recFormat == AudioSdkFormat::OGG)
+                                     ? (m_encryptOn ? L".aogg" : L".ogg")
+                                     : (m_encryptOn ? L".aenc" : L".wav");
+            swprintf_s(msg, std::size(msg), L"录音已保存为 %s%s", name.c_str(), ext);
             MessageBoxW(m_hwnd, msg, L"录音", MB_OK | MB_ICONINFORMATION);
         }
         m_lanePath[lane].clear();
@@ -690,13 +711,14 @@ void CMainWindows::AudioPauseResumeRec(){
 }
 
 /**
- * @brief 录音组按钮统一置灰/恢复(开始/停止/暂停/加密 + 关联的会话对象操作)
+ * @brief 录音组按钮统一置灰/恢复(开始/停止/暂停/加密/格式 + 关联的会话对象操作)
  * @param on true=恢复可用, false=置灰
  */
 void CMainWindows::SetRecGroupEnabled(bool on){
     EnableWindow(m_hBtnRec_Start_Stop, on);
     EnableWindow(m_hBtnRecPause, on && m_isRecording);   // 暂停只在录音中可用
     EnableWindow(m_hChkEnc, on && !m_isRecording);       // 加密只在非录制中可改
+    EnableWindow(m_hCmbFormat, on && !m_isRecording);    // 格式同理
 }
 
 /**
@@ -709,8 +731,8 @@ bool CMainWindows::OpenFileDialog(HWND hwndOwner){
     OPENFILENAMEW ofn = {};
     ofn.lStructSize  = sizeof(ofn);                       // 结构体大小(必须填)
     ofn.hwndOwner    = hwndOwner;                         // 父窗口
-    // 过滤: 两两一组(显示名\0 匹配串), 结尾要两个 \0
-    ofn.lpstrFilter  = L"音频文件 (*.wav;*.aenc)\0*.wav;*.aenc\0所有文件 (*.*)\0*.*\0\0";
+    ofn.lpstrFilter  = L"音频文件 (*.wav;*.aenc;*.ogg;*.aogg)\0*.wav;*.aenc;*.ogg;*.aogg\0"
+                       L"所有文件 (*.*)\0*.*\0\0";
     ofn.lpstrFile    = file;                              // 选中的路径写这里
     ofn.nMaxFile     = MAX_PATH;                          // 缓冲长度
     ofn.Flags        = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;  // 只许选已存在文件
@@ -720,10 +742,13 @@ bool CMainWindows::OpenFileDialog(HWND hwndOwner){
     m_curFile = file;                                     // 记住完整路径
 
     // 可选: 在窗口标题上显示当前文件, 直观反馈选到了什么。
+    // .aenc 认魔数(SDK 现成的), .aogg 按后缀 —— 为这一行提示再导出个 IsAoggFile 不值当。
+    const std::wstring wpath(file);                       // file 是裸数组, 没 size()/compare()
+    const bool bEnc = m_recApi.IsAencFile(WideToUtf8(file).c_str()) ||
+                      (wpath.size() >= 5 && wpath.compare(wpath.size() - 5, 5, L".aogg") == 0);
     std::wstring title = L"Win32 音频播放器 - ";
     title += file;
-    title += m_recApi.IsAencFile(WideToUtf8(file).c_str())
-                 ? L"  (加密 .aenc)" : L"  (明文)";
+    title += bEnc ? L"  (加密)" : L"  (明文)";
     SetWindowTextW(m_hwnd, title.c_str());
 
     if (!m_isRecording && !m_isPlaying)
@@ -772,6 +797,7 @@ void CMainWindows::SetPlayGroupPlaying(){
     EnableWindow(m_hBtnRec_Start_Stop, FALSE);
     EnableWindow(m_hBtnRecPause, FALSE);
     EnableWindow(m_hChkEnc, FALSE);
+    EnableWindow(m_hCmbFormat, FALSE);
 }
 
 /**
@@ -785,6 +811,7 @@ void CMainWindows::SetPlayGroupIdle(){
     EnableWindow(m_hBtnOpen,      TRUE);
     EnableWindow(m_hBtnRec_Start_Stop, !m_recBusy && !m_isRecording);
     EnableWindow(m_hChkEnc, !m_isRecording);
+    EnableWindow(m_hCmbFormat, !m_isRecording);
     EnableWindow(m_hBtnRecPause, m_isRecording);       // 录音中暂停仍可用
 }
 
@@ -1025,14 +1052,15 @@ void CMainWindows::DrawWaveform(HDC hdc){
 
     if (data && count > 0){
         const int w = rc.right - rc.left;
+        const int cols = m_isRecording ? count : AUDIO_SDK_WAVE_FILE_POINTS;
 
         // 每个像素列对应缓冲里的一段 [i0, i1): 把这段的 min/max 合起来再画
         HPEN penWave = CreatePen(PS_SOLID, 1, RGB(0, 120, 215));
         penOld = (HPEN)SelectObject(hdc, penWave);
 
         for (int x = 0; x < w; ++x){
-            int i0 = (int)((long long)x * count / w);
-            int i1 = (int)((long long)(x + 1) * count / w);
+            int i0 = (int)((long long)x * cols / w);
+            int i1 = (int)((long long)(x + 1) * cols / w);
             if (i1 <= i0) i1 = i0 + 1;                 // 点数少于列数时至少取一个
             if (i0 >= count) break;
 

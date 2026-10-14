@@ -30,6 +30,7 @@ endif()
 set(SDK_COMMON_SOURCES
     src/common/wav_format.cpp
     src/common/encrypted_format.cpp
+    src/common/ogg_format.cpp      # ogg/vorbis 编解码(压缩格式层)
     src/common/waveform.cpp        # 波形峰值计算(两平台共用)
     src/common/wave_ring.cpp       # 波形环形缓冲(两平台共用, 实现自 wave_ring.h 抽出)
     src/common/byte_ring.cpp       # 字节环形缓冲(流式播放: 生产者读文件 / 音频回调取数据)
@@ -71,9 +72,11 @@ if(WIN32)
 endif()
 
 # 音频编码解码库
-list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows/vorbis")
-find_package(Vorbis CONFIG REQUIRED)
-target_link_libraries(audio_sdk PRIVATE Vorbis::vorbisenc Vorbis::vorbisfile)
+if(WIN32)
+    list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows/vorbis")
+    find_package(Vorbis CONFIG REQUIRED)
+    target_link_libraries(audio_sdk PRIVATE Vorbis::vorbisenc Vorbis::vorbisfile)
+endif()
 # ---------------------------------------------------------------------------
 # 测试
 # ---------------------------------------------------------------------------
@@ -98,7 +101,10 @@ if(WIN32)
             ${CMAKE_CURRENT_SOURCE_DIR}/logging/include
             ${CMAKE_CURRENT_SOURCE_DIR}/test
         )
-        target_link_libraries(${test_name} PRIVATE ${PLATFORM_LIBS})
+
+        target_link_libraries(${test_name} PRIVATE
+            ${PLATFORM_LIBS}
+            Vorbis::vorbisenc Vorbis::vorbisfile)
         target_compile_definitions(${test_name} PRIVATE AUDIO_SDK_STATIC)
         set_target_properties(${test_name} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test

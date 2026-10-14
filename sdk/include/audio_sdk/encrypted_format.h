@@ -17,6 +17,9 @@ public:
    static constexpr uint16_t kAencVersion = 1;              // 格式版本（将来布局变化时好区分）
    static constexpr char     kAencMagic[4] = {'A','E','N','C'};  // 容器魔数（文件前 4 字节）
    static constexpr size_t   kAencMagicSize = 4;
+   // Ogg 容器的加密魔数
+   static constexpr char     kAoggMagic[4] = {'A','O','G','G'};
+   static constexpr size_t   kAoggMagicSize = 4;
 
    // 判断一段内存的开头是不是 .aenc 魔数（只比魔数, 不校验内部 WAV 头）。
    static bool IsAencData(const uint8_t* data, size_t size);

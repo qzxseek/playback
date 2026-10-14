@@ -32,7 +32,8 @@
 #define BTN_ENCRYPT         1005   // 加密复选框
 #define BTN_OPEN_FILE       1006   // 打开文件按钮
 #define IDC_LBL_TIME        1007   // 时间/状态文字
-#define IDC_LBL_REC_TIME    1008   // 录音时间文字  
+#define IDC_LBL_REC_TIME    1008   // 录音时间文字
+#define CMB_REC_FORMAT      1009   // 落盘格式下拉框(WAV / OGG)
 
 // 波形不再用自定义窗口消息: 改拉模式后, 音频线程不会主动通知 UI,
 // 由 TIMER_PROGRESS 定时器每 100ms 去 SDK 拉一次(见 ConsumeWaveRing)。
@@ -124,6 +125,9 @@ constexpr int kSmallBtnW = 80;
 constexpr int kRecBtnX   = kMargin;
 constexpr int kRecPauseX = kRecBtnX   + kBtnW + kGap;
 constexpr int kEncX      = kRecPauseX + kBtnW + kGap;
+// 落盘格式下拉(加密框右边)。下拉列表样式只显示当前那一项, 90 够 "WAV"/"OGG" + 箭头
+constexpr int kFmtW      = 90;
+constexpr int kFmtX      = kEncX + kSmallBtnW + kGap;
 
 // ---- 播放行控件的 x ----
 constexpr int kOpenX      = kMargin;
@@ -132,7 +136,7 @@ constexpr int kPlayPauseW = 90;
 constexpr int kPlayPauseX = kPlayBtnX + kSmallBtnW + kGap;
 
 // ---- 右列文字: 从按钮列右边让开一点, 一直铺到公共右边界 ----
-constexpr int kTextColX = kEncX + kSmallBtnW + kColGap;
+constexpr int kTextColX = kFmtX + kFmtW + kColGap;
 constexpr int kTextColW = kRight - kTextColX;
 
 // 文字比同行按钮矮一截, 在行内垂直居中
@@ -226,7 +230,9 @@ private:
     unsigned m_outputSeq = 0;         // 输出文件名序号(单调递增, 保证同秒内也不重名)
 
     bool m_encryptOn = true;
-    
+    // 落盘容器(下拉选的)。跟 m_encryptOn 一个套路: 记在 UI 侧, 每会话新建录音器时套用。
+    // 两者一起决定后缀 —— WAV→.wav/.aenc, OGG→.ogg/.aogg。默认 WAV, 与老行为一致。
+    AudioSdkFormat m_recFormat = AudioSdkFormat::WAV;
     AudioRecSdkApi m_recApi;         
     AudioPlaSdkApi m_playApi;        
 
@@ -268,6 +274,7 @@ private:
     HWND m_hBtnRec_Start_Stop  = NULL;   // 开始/停止录音
     HWND m_hBtnRecPause        = NULL;   // 暂停/继续录音
     HWND m_hChkEnc             = NULL;   // 加密复选框
+    HWND m_hCmbFormat          = NULL;   // 落盘格式下拉(WAV / OGG)
     HWND m_hBtnOpen            = NULL;   // 打开文件
     HWND m_hBtnPlay_Start_Stop = NULL;   // 播放/停止播放按当前状态
     HWND m_hBtnPlayPause       = NULL;   // 暂停/继续播放

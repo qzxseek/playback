@@ -6,6 +6,7 @@
 #include "audio_sdk/wav_validate.h"
 #include "audio_sdk/wav_format.h"
 #include "audio_sdk/encrypted_format.h"
+#include "audio_sdk/ogg_format.h"       // COggStreamReader: 压缩流的解码器
 #include "audio_sdk/waveform.h"
 #include "audio_sdk/logging.h"
 
@@ -79,6 +80,10 @@ struct CAudioPlayer::Impl
     HANDLE m_hThread = NULL;                  // 线程句柄
     HANDLE m_hWakeEvent = NULL;               // 唤醒事件句柄   生产者唤醒消费者
     HANDLE m_hStopEvent = NULL;               // 停止事件句柄
+    AudioSdkFormat m_type = AudioSdkFormat::WAV; // 默认格式类型
+
+    COggStreamReader m_oggReader;
+    bool m_bOgg = false;                      // 本次播的是不是 Ogg(压缩流)
 };
 
 CAudioPlayer::CAudioPlayer() : m_impl(new Impl()) {}
@@ -155,9 +160,20 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    WavValidate validator;
    const WavHeader* pHdr = nullptr;
    bool bEncrypted  = false;
+   bool bOgg        = false;
    size_t payloadOffset = 0;
 
-   if (CEncryptedFormat::IsAencData(vecBuf.data(), vecBuf.size())){
+   if (COggFormat::IsOggData(vecBuf.data(), vecBuf.size()) ||
+       COggFormat::IsAoggData(vecBuf.data(), vecBuf.size())){
+
+      const AudioSdk::AudioSdkState ost = p->m_oggReader.Open(utf8Path);
+      if (ost != AudioSdk::AudioSdkState::NONE) {
+         AUDIO_LOG_ERROR(kTag, "Ogg 打不开 path=\"%s\" -> 状态码 %d", utf8Path, static_cast<int>(ost));
+         return ost;                        // 不是可解的 Vorbis 流
+      }
+      bOgg = true;
+   }
+   else if (CEncryptedFormat::IsAencData(vecBuf.data(), vecBuf.size())){
       if (vecBuf.size() < CEncryptedFormat::kAencPrefixSize + sizeof(WavHeader)) {
          AUDIO_LOG_ERROR(kTag, "AENC 容器残缺(%zu 字节, 装不下前缀+头) path=\"%s\" -> FORMAT_NOT_SUPPORTED",
                          vecBuf.size(), utf8Path);
@@ -186,23 +202,38 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
       payloadOffset = validator.GetDataOffset();
    }
    else {
-      AUDIO_LOG_ERROR(kTag, "既非 AENC 也非 RIFF path=\"%s\" -> FORMAT_NOT_SUPPORTED", utf8Path);
+      AUDIO_LOG_ERROR(kTag, "既非 Ogg 也非 AENC 也非 RIFF path=\"%s\" -> FORMAT_NOT_SUPPORTED", utf8Path);
       return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;             // 不是认识的音频格式
    }
 
    p->m_path = utf8Path;
-   p->m_payloadOffset = payloadOffset;
-   p->m_encrypted     = bEncrypted;
-   p->m_dataSize      = validator.GetDataSize();
-
-   // 解析 WAVEFORMATEX
-   p->m_fmt = {};
+   p->m_bOgg = bOgg;
+   p->m_fmt  = {};
    p->m_fmt.wFormatTag = WAVE_FORMAT_PCM;
-   p->m_fmt.nChannels = pHdr->numChannels;
-   p->m_fmt.nSamplesPerSec = pHdr->sampleRate;
-   p->m_fmt.wBitsPerSample = pHdr->bitsPerSample;
-   p->m_fmt.nBlockAlign = pHdr->blockAlign;
-   p->m_fmt.nAvgBytesPerSec = pHdr->byteRate;
+
+   if (bOgg){
+      p->m_fmt.nChannels      = static_cast<WORD>(p->m_oggReader.GetChannels());
+      p->m_fmt.nSamplesPerSec = static_cast<DWORD>(p->m_oggReader.GetSampleRate());
+      p->m_fmt.wBitsPerSample = p->m_oggReader.GetBitsPerSample();
+      p->m_fmt.nBlockAlign    = p->m_oggReader.GetBlockAlign();
+      // 解码器只吐 16bit PCM, 每秒字节数按定义算就行
+      p->m_fmt.nAvgBytesPerSec = p->m_fmt.nSamplesPerSec * p->m_fmt.nBlockAlign;
+      p->m_encrypted     = false;           // 解密在解码器内部做, 这里再解一遍就是解回密文
+      p->m_payloadOffset = 0;               // 压缩流用不上文件偏移, 解码器自己记位置
+      p->m_dataSize      = p->m_oggReader.GetTotalBytes();
+   }
+   else {
+      p->m_payloadOffset = payloadOffset;
+      p->m_encrypted     = bEncrypted;
+      p->m_dataSize      = validator.GetDataSize();
+
+      // 解析 WAVEFORMATEX
+      p->m_fmt.nChannels = pHdr->numChannels;
+      p->m_fmt.nSamplesPerSec = pHdr->sampleRate;
+      p->m_fmt.wBitsPerSample = pHdr->bitsPerSample;
+      p->m_fmt.nBlockAlign = pHdr->blockAlign;
+      p->m_fmt.nAvgBytesPerSec = pHdr->byteRate;
+   }
 
    p->m_readPos = 0;  // 初始化读取位置为 0
    p->m_playPos.store(0, std::memory_order_relaxed);  // 初始化播放位置为 0
@@ -224,7 +255,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    }
    if (res == WAVERR_BADFORMAT){
       AUDIO_LOG_ERROR(kTag, "waveOutOpen 无设备支持该格式 %uch %uHz %ubit (MMRESULT=%u) -> FORMAT_NOT_SUPPORTED",
-                      pHdr->numChannels, pHdr->sampleRate, pHdr->bitsPerSample,
+                      p->m_fmt.nChannels, p->m_fmt.nSamplesPerSec, p->m_fmt.wBitsPerSample,
                       static_cast<unsigned>(res));
       p->m_dataSize = 0;
       p->m_fmt = {};
@@ -273,9 +304,11 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    // 成功: 记"播的是哪个文件 + 什么格式"。要回答的是"当时放的是不是我以为的那个" ——
    // 路径给这个答案, 格式和时长给"内容有没有被截断/是不是变样了"
    const uint32_t byteRate = p->m_fmt.nAvgBytesPerSec;
-   AUDIO_LOG_INFO(kTag, "开始播放 path=\"%s\" %s %uch %uHz %ubit %.2fs (%zu 字节)",
-                  utf8Path, bEncrypted ? "加密" : "明文",
-                  pHdr->numChannels, pHdr->sampleRate, pHdr->bitsPerSample,
+   const char* const container = bOgg ? (bEncrypted ? "aogg" : "ogg")
+                                      : (bEncrypted ? "aenc" : "wav");
+   AUDIO_LOG_INFO(kTag, "开始播放 path=\"%s\" %s %uch %uHz %ubit %.2fs (%zu 字节 PCM)",
+                  utf8Path, container,
+                  p->m_fmt.nChannels, p->m_fmt.nSamplesPerSec, p->m_fmt.wBitsPerSample,
                   byteRate ? static_cast<double>(p->m_dataSize) / byteRate : 0.0,
                   p->m_dataSize);
    return AudioSdk::AudioSdkState::NONE;
@@ -342,18 +375,26 @@ bool CAudioPlayer::Impl::PreparePlay(){
 
       size_t szData = min(block.vecData.size(), m_dataSize - m_readPos);   // 尾块可能不足一整块
 
-      // 现读现解: 定位到这块在文件里的位置, 直接读进设备缓冲
-      m_file.seekg(static_cast<std::streamoff>(m_payloadOffset + m_readPos));
-      if (!m_file.read(reinterpret_cast<char*>(block.vecData.data()),
-                       static_cast<std::streamsize>(szData))) {
-         // 读不出来(文件被截断/被别的程序截走)就当文件到此为止: 游标推到末尾
-         m_readPos = m_dataSize;
-         return false;
+      if (m_bOgg){
+         szData = m_oggReader.Read(block.vecData.data(), szData);
+         if (szData == 0) {           // 读干净了(或解码出错): 当作文件到此为止
+            m_readPos = m_dataSize;
+            return false;
+         }
       }
-      
-      // 解密
-      if (m_encrypted)
-         CEncryptedFormat::XorCrypt(block.vecData.data(), szData, m_readPos);
+      else {
+         // 现读现解: 定位到这块在文件里的位置, 直接读进设备缓冲
+         m_file.seekg(static_cast<std::streamoff>(m_payloadOffset + m_readPos));
+         if (!m_file.read(reinterpret_cast<char*>(block.vecData.data()),
+                          static_cast<std::streamsize>(szData))) {
+            // 读不出来(文件被截断/被别的程序截走)就当文件到此为止: 游标推到末尾
+            m_readPos = m_dataSize;
+            return false;
+         }
+         // 解密
+         if (m_encrypted)
+            CEncryptedFormat::XorCrypt(block.vecData.data(), szData, m_readPos);
+      }
       m_readPos += szData;
 
       block.waveHdr = {};                             // 清楚旧数据
@@ -392,6 +433,8 @@ void CAudioPlayer::Impl::CleanUpDevice(){
    }
    if (m_file.is_open())
       m_file.close();
+   m_oggReader.Close();          
+   m_bOgg = false;              
    if (m_csInit){
       DeleteCriticalSection(&m_cs);
       m_csInit = false;
@@ -428,6 +471,9 @@ AudioSdk::AudioSdkState CAudioPlayer::Seek(uint32_t posBytes){
       block.waveHdr.dwFlags = 0;           // 清 DONE/PREPARED 位, 供下次复用
    }
    p->m_readPos = posBytes;
+   // Ogg 必须让解码器一起跳
+   if (p->m_bOgg)
+      p->m_oggReader.SeekTo(posBytes);
    LeaveCriticalSection(&p->m_cs);
 
    SetEvent(p->m_hWakeEvent);                            // 唤醒播放线程, 从新位置补块
@@ -525,9 +571,10 @@ uint32_t CAudioPlayer::GetTotalPosMs() const{
  * @brief 取整个文件的波形(降采样成 kFilePoints 个峰值点)
  * @param cb 回调(传 NULL 则什么都不做)
  * @param userData 透传给回调的指针
- * @note 在调用线程同步回调一次, 不涉及音频线程
- *       分块扫文件算, 而不是拿整份 PCM —— 内存不随文件大小涨
- *       回调返回后缓冲即失效, 调用方需要就自己拷走
+ * @note 在调用线程同步跑完, 不涉及音频线程(回调也在本线程里, 顺序发生)
+ *       分块算, 而不是拿整份 PCM —— 内存不随文件大小涨
+ *       回调【可能来多次】, 每次的 points 是"已算出几个点"(WAV 那条路一次给全;
+ *       Ogg 是解一段报一段)。回调返回后缓冲即失效, 调用方需要就自己拷走
  */
 void CAudioPlayer::BuildWaveform(AudioSdkWaveCallback cb, void* userData){
    if (!cb) return;
@@ -537,6 +584,14 @@ void CAudioPlayer::BuildWaveform(AudioSdkWaveCallback cb, void* userData){
 
    // 用栈上的定长缓冲: 1024 点 × 2 × 4 字节 = 8KB, 栈上放得下, 不必分配堆内存
    float minmax[CWaveform::kFilePoints * 2] = {};
+
+   if (p->m_bOgg){
+      COggStreamReader r;
+      if (r.Open(p->m_path.c_str()) != AudioSdk::AudioSdkState::NONE)
+         return;                                          // 打不开, 当没加载
+      r.BuildPeaks(minmax, CWaveform::kFilePoints, cb, userData);
+      return;
+   }
 
    // 分块扫文件算, 内存固定
    if (!CWaveform::BuildFilePeaks(p->m_path.c_str(), p->m_payloadOffset, p->m_dataSize,

@@ -139,6 +139,15 @@ AUDIO_API void AudioSdk_RecorderSetOutputPath(void* handle, const char* utf8Path
         AsRecorder(handle)->SetOutputPath(utf8Path);
 }
 
+// 设置录音格式(录制中不生效)
+AUDIO_API void AudioSdk_RecorderSetFormat(void* handle, int format) {
+    if (handle) AsRecorder(handle)->SetFormat(static_cast<AudioSdkFormat>(format));
+}
+
+AUDIO_API int AudioSdk_RecorderGetFormat(void* handle) {
+    return handle ? static_cast<int>(AsRecorder(handle)->GetFormat()) : 0;
+}
+
 // 切换加密开关(录制中不生效)
 AUDIO_API void AudioSdk_RecorderSetAencEncrypt(void* handle) {
     if (handle) AsRecorder(handle)->SetAencEncrypt();

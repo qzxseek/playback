@@ -22,9 +22,12 @@ public:
 
     AudioSdk::AudioSdkState StartRecording();   // 开始录音
     void PauseResumeRecording();                // 暂停/继续录音
-    AudioSdk::AudioSdkState StopRecording();    // 停止录音并落盘(默认 .aenc)
+    AudioSdk::AudioSdkState StopRecording();    // 停止录音并落盘
 
     void SetOutputPath(const char* utf8Path);
+
+    void SetFormat(AudioSdkFormat format);
+    AudioSdkFormat GetFormat() const;
 
     void SetAencEncrypt();                      // 切换加密开关
     bool GetAencEncrypt() const;                // 当前是否加密保存
