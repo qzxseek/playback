@@ -72,10 +72,6 @@ if(WIN32)
 endif()
 
 # 音频编码解码库(Vorbis)
-# 用 CMAKE_PREFIX_PATH 而不是 Vorbis_DIR: 指目录的话给的是"放 VorbisConfig.cmake
-# 的目录", 而且 VorbisConfig 内部还 find_dependency(Ogg), 得把 Ogg 的位置也写出来
-# 才够。前缀搜索一步到位, 两个平台写法也一致 —— 不管包是 vcpkg 的 share/<包名>/
-# 布局, 还是上游 install(EXPORT) 的 lib/cmake/<包名>/ 布局, 都指包根目录。
 if(WIN32)
     list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows/vorbis")
 elseif(ANDROID)
