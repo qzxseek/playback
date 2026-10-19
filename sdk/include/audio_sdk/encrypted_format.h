@@ -20,6 +20,9 @@ public:
    // Ogg 容器的加密魔数
    static constexpr char     kAoggMagic[4] = {'A','O','G','G'};
    static constexpr size_t   kAoggMagicSize = 4;
+   // Opus 容器的加密魔数
+   static constexpr char     kAopusMagic[4] = {'A','O','P','U'};
+   static constexpr size_t   kAopusMagicSize = 4;
 
    // 判断一段内存的开头是不是 .aenc 魔数（只比魔数, 不校验内部 WAV 头）。
    static bool IsAencData(const uint8_t* data, size_t size);

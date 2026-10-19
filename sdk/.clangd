@@ -14,6 +14,19 @@ CompileFlags:
     # 归在 platform/windows 下是因为暂时只有 Windows 有这份库; Android 将来放 platform/android。
     # 这里只能写绝对路径: clangd 的 -I 是相对它自己的启动目录解释的, 写相对路径会飘。
     - -IC:/Users/admin/Desktop/exam_sdk/sdk/src/platform/windows/vorbis/include
+    # opus 同样是随仓库走的那份(裁剪过的 vcpkg 布局), 目录与 CMake 的 CMAKE_PREFIX_PATH 一致
+    - -IC:/Users/admin/Desktop/exam_sdk/sdk/src/platform/windows/opus/include
+    # libopusenc(源码在 tool/libopusenc): 公开头 + 它内部那套平铺的私有头
+    - -IC:/Users/admin/Desktop/exam_sdk/sdk/tool/libopusenc/include
+    - -IC:/Users/admin/Desktop/exam_sdk/sdk/tool/libopusenc/include/opus
+    - -IC:/Users/admin/Desktop/exam_sdk/sdk/tool/libopusenc/src
+    # 这几个宏是 libopusenc 自己那套"嵌进别人项目"的编法要求的, 见 CMakeLists 里 opusenc
+    # 目标的注释。对我们自己的源文件没有含义(vendored 的 .c 不带上它们会直接 #error)
+    - -DOUTSIDE_SPEEX
+    - -DFLOATING_POINT
+    - -DRANDOM_PREFIX=libopusenc
+    - '-DPACKAGE_NAME="libopusenc"'
+    - '-DPACKAGE_VERSION="0.3"'
     - -isystem
     - C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools/VC/Tools/MSVC/14.29.30133/include
     - -isystem

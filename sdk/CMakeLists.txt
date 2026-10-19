@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(audio_sdk CXX)
+project(audio_sdk CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,7 +43,10 @@ add_library(audio_sdk SHARED
     ${SDK_COMMON_SOURCES}
     src/common/wav_validate.cpp
     src/common/audio_c_api.cpp     # C 接口层(extern "C" 导出, 供 Windows UI 显式加载)
+    src/common/opus_format.cpp     # opus 编码(依赖下面的 opus 包 + opusenc 目标)
 )
+# 注: opus_format.cpp 没进 SDK_COMMON_SOURCES —— 测试目标不碰 opus,
+# 拖进去就得让四个测试也链 opus 包。将来测试要用 opus 时再挪进公共列表。
 
 target_include_directories(audio_sdk PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -67,7 +70,11 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_PDB_FILE:audio_sdk>"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../windows_app/resource/audio_sdk.pdb"
-        COMMENT "发布 audio_sdk.dll / audio_sdk.pdb 到 windows_app/resource"
+        # opus 只有动态库(vcpkg 那份是 SHARED IMPORTED), 少了它 audio_sdk.dll 直接加载不起来
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:Opus::opus>"
+                "${CMAKE_CURRENT_SOURCE_DIR}/../windows_app/resource/opus.dll"
+        COMMENT "发布 audio_sdk.dll / audio_sdk.pdb / opus.dll 到 windows_app/resource"
     )
 endif()
 
@@ -80,6 +87,44 @@ endif()
 
 find_package(Vorbis CONFIG REQUIRED)
 target_link_libraries(audio_sdk PRIVATE Vorbis::vorbisenc Vorbis::vorbisfile)
+
+# 音频编码解码库(Opus)
+if(WIN32)
+    list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/windows/opus")
+elseif(ANDROID)
+    set(Opus_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/platform/android/opus/lib/cmake/opus")
+endif()
+
+find_package(Opus CONFIG REQUIRED)
+target_link_libraries(audio_sdk PRIVATE Opus::opus)
+
+# libopusenc: "opus 的 ogg 封装"(源码在 tool/libopusenc)
+add_library(opusenc STATIC
+    tool/libopusenc/src/ogg_packer.c
+    tool/libopusenc/src/opus_header.c
+    tool/libopusenc/src/opusenc.c
+    tool/libopusenc/src/picture.c
+    tool/libopusenc/src/resample.c
+    tool/libopusenc/src/unicode_support.c
+)
+
+target_include_directories(opusenc
+    PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/tool/libopusenc/include
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tool/libopusenc/include/opus
+            ${CMAKE_CURRENT_SOURCE_DIR}/tool/libopusenc/src       # 内部头 + resample
+)
+
+target_compile_definitions(opusenc PRIVATE
+    OUTSIDE_SPEEX
+    FLOATING_POINT
+    RANDOM_PREFIX=libopusenc
+    PACKAGE_NAME="libopusenc"
+    PACKAGE_VERSION="0.3"
+)
+target_link_libraries(opusenc PRIVATE Opus::opus)
+
+target_link_libraries(audio_sdk PRIVATE opusenc)
+
 # ---------------------------------------------------------------------------
 # 测试
 # ---------------------------------------------------------------------------
