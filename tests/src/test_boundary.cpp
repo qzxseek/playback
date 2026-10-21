@@ -448,7 +448,8 @@ static void TestSeekClamp() {
     std::remove(path.c_str());
 }
 
-int main() {
+// 由 test_main.cpp 依次调用; 返回本套的失败数
+int RunBoundary() {
     tst::Begin("边界测试");
     RUN(TestZeroLengthData);
     RUN(TestExactlyOneFrame);
@@ -462,5 +463,5 @@ int main() {
     RUN(TestComputePeaksBounds);
     RUN(TestReadWaveBounds);
     RUN(TestSeekClamp);
-    return tst::Summary("边界");
+    return tst::Summary("边界") ? 1 : 0;
 }

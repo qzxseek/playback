@@ -70,12 +70,24 @@ inline void PauseBeforeExit() {
 #endif
 }
 
+// 一套跑完: 打印小结并把计数清零, 留给下一套。返回本套的失败数
 inline int Summary(const char* suite) {
     std::printf("\n==== %s: 通过 %d, 失败 %d, 跳过 %d ====\n",
                 suite, g_pass, g_fail, g_skip);
-    PauseBeforeExit();
-    return g_fail ? 1 : 0;
+    const int nFail = g_fail;
+    g_pass = g_fail = g_skip = 0;
+    return nFail;
 }
+
+// 所有套件跑完: 打印总计, 双击启动时停一下再关窗口
+inline int Finalize(int nTotalFail) {
+    std::printf("\n======== 合计: 失败 %d ========\n", nTotalFail);
+    if (nTotalFail == 0)
+        std::printf("全部通过\n");
+    PauseBeforeExit();
+    return nTotalFail ? 1 : 0;
+}
+
 
 // ---------------------------------------------------------------------------
 // 造数据 / 读文件
@@ -178,6 +190,12 @@ inline bool DeviceUnavailable(AudioSdk::AudioSdkState st) {
 }
 
 }   // namespace tst
+
+// 四个套件的入口, main 依次调用(实现在各自的 test_*.cpp 里)
+int RunPositive();
+int RunNegative();
+int RunBoundary();
+int RunAbnormal();
 
 #define CHECK(cond, msg)            tst::Report((msg), (cond), __LINE__)
 #define CHECK_D(cond, msg, detail)  tst::Report((msg), (cond), __LINE__, (detail))

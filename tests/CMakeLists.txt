@@ -37,32 +37,29 @@ foreach(_src IN LISTS PLATFORM_SOURCES SDK_COMMON_SOURCES)
     list(APPEND SDK_SOURCES "${SDK_ROOT}/${_src}")
 endforeach()
 
-set(SDK_TEST_SOURCES
+# 四个套件编成一个 exe: 双击就跑全部, 不用挨个开四个窗口
+add_executable(audio_sdk_tests
+    src/test_main.cpp
     src/test_positive.cpp
     src/test_negative.cpp
     src/test_boundary.cpp
     src/test_abnormal.cpp
+    ${SDK_SOURCES}
+    ${SDK_ROOT}/src/common/wav_validate.cpp
+)
+target_include_directories(audio_sdk_tests PRIVATE
+    ${SDK_ROOT}/include
+    ${SDK_ROOT}/logging/include
 )
 
-foreach(test_src IN LISTS SDK_TEST_SOURCES)
-    get_filename_component(test_name ${test_src} NAME_WE)
-    add_executable(${test_name}
-        ${test_src}
-        ${SDK_SOURCES}
-        ${SDK_ROOT}/src/common/wav_validate.cpp
-    )
-    target_include_directories(${test_name} PRIVATE
-        ${SDK_ROOT}/include
-        ${SDK_ROOT}/logging/include
-    )
+# opusenc 的 PUBLIC include 会把 <opus/opusenc.h> 和它引的 <opus/opus.h> 带进来
+target_link_libraries(audio_sdk_tests PRIVATE
+    ${PLATFORM_LIBS}
+    Vorbis::vorbisenc Vorbis::vorbisfile
+    opusenc)
+target_compile_definitions(audio_sdk_tests PRIVATE AUDIO_SDK_STATIC)
 
-    # opusenc 的 PUBLIC include 会把 <opus/opusenc.h> 和它引的 <opus/opus.h> 带进来
-    target_link_libraries(${test_name} PRIVATE
-        ${PLATFORM_LIBS}
-        Vorbis::vorbisenc Vorbis::vorbisfile
-        opusenc)
-    target_compile_definitions(${test_name} PRIVATE AUDIO_SDK_STATIC)
-    set_target_properties(${test_name} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test
-    )
-endforeach()
+# 产物放在 tests/test/<Config>/, 和源目录一一对上
+set_target_properties(audio_sdk_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test
+)

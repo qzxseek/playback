@@ -752,7 +752,8 @@ static void TestRecordThenPlay() {
     std::remove(file.c_str());
 }
 
-int main() {
+// 由 test_main.cpp 依次调用; 返回本套的失败数
+int RunPositive() {
     tst::Begin("正向测试");
     RUN(TestWavRoundTrip);
     RUN(TestAencRoundTrip);
@@ -766,5 +767,5 @@ int main() {
     RUN(TestPlayOpus);
     RUN(TestPlayAenc);
     RUN(TestRecordThenPlay);
-    return tst::Summary("正向");
+    return tst::Summary("正向") ? 1 : 0;
 }

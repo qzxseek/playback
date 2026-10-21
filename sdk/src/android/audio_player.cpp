@@ -64,10 +64,10 @@ struct CAudioPlayer::Impl
     enum class ReaderKind { None, Ogg, Opus };
     COggStreamReader  m_oggReader;
     COpusStreamReader m_opusReader;
-    std::atomic<ReaderKind> m_reader{ReaderKind::None};
+    std::atomic<ReaderKind> m_readerKind{ReaderKind::None};
 
     CByteRing m_ring;
-    std::thread m_reader;
+    std::thread m_readerThread;       // 生产者线程(ReadLoop); 与上面的"用哪个解码器"是两回事
     std::atomic<bool> m_stopReq{false};
 
     // 回调自然播完置位(true 表示已喂完并返回 STOP), 供 IsPlaying() 如实上报
@@ -196,7 +196,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
     }
 
     p->m_path = utf8Path;
-    p->m_reader.store(bOpus ? Impl::ReaderKind::Opus
+    p->m_readerKind.store(bOpus ? Impl::ReaderKind::Opus
                     : bOgg  ? Impl::ReaderKind::Ogg
                             : Impl::ReaderKind::None,
                      std::memory_order_relaxed);
@@ -274,7 +274,7 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
     // 先起生产者再开流
     p->m_stopReq.store(false, std::memory_order_release);
     try {
-        p->m_reader = std::thread([p] { p->ReadLoop(); });
+        p->m_readerThread = std::thread([p] { p->ReadLoop(); });
     } catch (const std::system_error&) {
         AUDIO_LOG_ERROR(kTag, "起播放读取线程失败 -> UNKNOWN_ERROR");
         p->CleanUpStream();
@@ -376,7 +376,7 @@ void CAudioPlayer::Impl::ReadLoop(){
         const size_t base = m_ring.Base();
         if (want < base || want > head) {
             // 读游标被甩到缓冲窗口之外, 要从 want 重开一轮
-            const ReaderKind eKind = m_reader.load(std::memory_order_relaxed);
+            const ReaderKind eKind = m_readerKind.load(std::memory_order_relaxed);
             if (eKind == ReaderKind::Opus)
                 m_opusReader.SeekTo(want);
             else if (eKind == ReaderKind::Ogg)
@@ -400,7 +400,7 @@ void CAudioPlayer::Impl::ReadLoop(){
         if (n > chunk.size()) n = chunk.size();
         if (n > space) n = space;
 
-        const ReaderKind eKind = m_reader.load(std::memory_order_relaxed);
+        const ReaderKind eKind = m_readerKind.load(std::memory_order_relaxed);
         if (eKind != ReaderKind::None) {
             // 压缩流: 顺序解, 解码器自己记着读到哪了(跟 head 同步推进)
             n = (eKind == ReaderKind::Opus) ? m_opusReader.Read(chunk.data(), n)
@@ -436,7 +436,7 @@ void CAudioPlayer::Impl::ReadLoop(){
 
 /**
    @brief : 停生产者 + 停流 + 关流 + 清状态(StopPlay 与析构共用)
-   @note 可重入: m_reader 一旦 join 过就不再 joinable, 第二次调用直接跳过。
+   @note 可重入: m_readerThread 一旦 join 过就不再 joinable, 第二次调用直接跳过。
 */
 void CAudioPlayer::Impl::CleanUpStream(){
     m_isPlaying = false;
@@ -445,8 +445,8 @@ void CAudioPlayer::Impl::CleanUpStream(){
 
     // 先停生产者再关流
     m_stopReq.store(true, std::memory_order_release);
-    if (m_reader.joinable())
-        m_reader.join();
+    if (m_readerThread.joinable())
+        m_readerThread.join();
 
     if (m_stream){
         AAudioStream_requestStop(m_stream);
@@ -459,7 +459,7 @@ void CAudioPlayer::Impl::CleanUpStream(){
         m_file.close();                   // 路径留着: BuildWaveform 要按它另开一份流
     m_oggReader.Close();                  // 生产者已 join, 之后没人再碰解码器
     m_opusReader.Close();
-    m_reader.store(ReaderKind::None, std::memory_order_relaxed);
+    m_readerKind.store(ReaderKind::None, std::memory_order_relaxed);
     m_dataSize = 0;
     m_payloadOffset = 0;
     m_encrypted = false;
@@ -566,7 +566,7 @@ void CAudioPlayer::BuildWaveform(AudioSdkWaveCallback cb, void* userData){
     // 用栈上的定长缓冲: 1024 点 × 2 × 4 字节 = 8KB, 不必分配堆内存
     float minmax[CWaveform::kFilePoints * 2] = {};
 
-    const Impl::ReaderKind eKind = p->m_reader.load(std::memory_order_relaxed);
+    const Impl::ReaderKind eKind = p->m_readerKind.load(std::memory_order_relaxed);
     if (eKind == Impl::ReaderKind::Opus){
         COpusStreamReader r;
         if (r.Open(p->m_path.c_str()) != AudioSdk::AudioSdkState::NONE)

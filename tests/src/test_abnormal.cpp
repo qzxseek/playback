@@ -456,7 +456,8 @@ static void TestDestroyWhileRecording() {
     std::remove(file.c_str());
 }
 
-int main() {
+// 由 test_main.cpp 依次调用; 返回本套的失败数
+int RunAbnormal() {
     tst::Begin("异常测试");
     RUN(TestStartTwice);
     RUN(TestStartWithUnwritableOutput);
@@ -474,5 +475,5 @@ int main() {
     // ↓ 最后两条会把活着的对象拆掉, 排在末尾: 万一崩了, 上面的结果已经打完
     RUN(TestDestroyWhilePlaying);
     RUN(TestDestroyWhileRecording);
-    return tst::Summary("异常");
+    return tst::Summary("异常") ? 1 : 0;
 }

@@ -495,7 +495,8 @@ static void TestWriteFailureReported() {
 #endif
 }
 
-int main() {
+// 由 test_main.cpp 依次调用; 返回本套的失败数
+int RunNegative() {
     tst::Begin("反向测试");
     RUN(TestBadRiffMagic);
     RUN(TestRiffSizeMismatch);
@@ -516,5 +517,5 @@ int main() {
     RUN(TestSaveToUnwritablePath);
     RUN(TestStreamWriterErrors);
     RUN(TestWriteFailureReported);
-    return tst::Summary("反向");
+    return tst::Summary("反向") ? 1 : 0;
 }
