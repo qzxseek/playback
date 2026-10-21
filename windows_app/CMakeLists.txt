@@ -38,10 +38,8 @@ target_link_libraries(audio_win_app PRIVATE
     comdlg32
 )
 
-# dll: 运行时 LoadLibrary 会先在 exe 所在目录找, 构建后自动拷到 exe 旁边, 保证双击就能跑
 add_custom_command(TARGET audio_win_app POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_CURRENT_SOURCE_DIR}/resource/audio_sdk.dll
-        ${CMAKE_CURRENT_SOURCE_DIR}/resource/opus.dll
         $<TARGET_FILE_DIR:audio_win_app>
 )

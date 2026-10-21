@@ -25,6 +25,10 @@ else()
     message(FATAL_ERROR "audio_sdk: 暂不支持的平台 ${CMAKE_SYSTEM_NAME}")
 endif()
 
+# 提交到父作用清单，供测试目标使用
+set(PLATFORM_SOURCES ${PLATFORM_SOURCES} PARENT_SCOPE)
+set(PLATFORM_LIBS    ${PLATFORM_LIBS}    PARENT_SCOPE)
+
 # 平台无关的公共源。抽成变量是必要的: 之前每个目标各抄一份列表,
 # 新加 waveform.cpp 时漏改了两个测试目标 → LNK2019。集中一处就不会再漏。
 set(SDK_COMMON_SOURCES
@@ -37,6 +41,7 @@ set(SDK_COMMON_SOURCES
     src/common/byte_ring.cpp       # 字节环形缓冲(流式播放: 生产者读文件 / 音频回调取数据)
     logging/src/logging.cpp        # 日志(两平台共用)
 )
+set(SDK_COMMON_SOURCES ${SDK_COMMON_SOURCES} PARENT_SCOPE)   # 给 ../tests 测试用
 
 # SDK 动态库
 add_library(audio_sdk SHARED
@@ -68,11 +73,7 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_PDB_FILE:audio_sdk>"
                 "${CMAKE_CURRENT_SOURCE_DIR}/../windows_app/resource/audio_sdk.pdb"
-        # opus 只有动态库(vcpkg 那份是 SHARED IMPORTED), 少了它 audio_sdk.dll 直接加载不起来
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "$<TARGET_FILE:Opus::opus>"
-                "${CMAKE_CURRENT_SOURCE_DIR}/../windows_app/resource/opus.dll"
-        COMMENT "发布 audio_sdk.dll / audio_sdk.pdb / opus.dll 到 windows_app/resource"
+        COMMENT "发布 audio_sdk.dll / audio_sdk.pdb 到 windows_app/resource"
     )
 endif()
 
@@ -123,43 +124,3 @@ target_link_libraries(opusenc PUBLIC Opus::opus)
 
 target_link_libraries(audio_sdk PRIVATE opusenc)
 
-# ---------------------------------------------------------------------------
-# 测试
-# ---------------------------------------------------------------------------
-if(WIN32)
-    set(SDK_TEST_SOURCES
-        test/src/test_positive.cpp
-        test/src/test_negative.cpp
-        test/src/test_boundary.cpp
-        test/src/test_abnormal.cpp
-    )
-
-    foreach(test_src IN LISTS SDK_TEST_SOURCES)
-        get_filename_component(test_name ${test_src} NAME_WE)
-        add_executable(${test_name}
-            ${test_src}
-            ${PLATFORM_SOURCES}
-            ${SDK_COMMON_SOURCES}
-            src/common/wav_validate.cpp
-        )
-        target_include_directories(${test_name} PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/include
-            ${CMAKE_CURRENT_SOURCE_DIR}/logging/include
-            ${CMAKE_CURRENT_SOURCE_DIR}/test
-        )
-
-        target_link_libraries(${test_name} PRIVATE
-            ${PLATFORM_LIBS}
-            Vorbis::vorbisenc Vorbis::vorbisfile
-            opusenc)
-        target_compile_definitions(${test_name} PRIVATE AUDIO_SDK_STATIC)
-        set_target_properties(${test_name} PROPERTIES
-            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test
-        )
-        add_custom_command(TARGET ${test_name} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "$<TARGET_FILE:Opus::opus>"
-                    "$<TARGET_FILE_DIR:${test_name}>"
-        )
-    endforeach()
-endif()
