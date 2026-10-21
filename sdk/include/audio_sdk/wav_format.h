@@ -67,7 +67,7 @@ public:
     AudioSdk::AudioSdkState Write(void* pcm, size_t n);
     bool Finish();
 
-    uint64_t Written() const { return m_written; }
+    uint64_t GetWritten() const { return m_written; }
 
 private:
     std::ofstream  m_file;

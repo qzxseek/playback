@@ -7,6 +7,7 @@
 #include "audio_sdk/audio_recorder.h"
 #include "audio_sdk/wav_format.h"
 #include "audio_sdk/ogg_format.h"    // COggStreamWriter: Ogg 落盘器
+#include "audio_sdk/opus_format.h"   // COpusStreamWriter: Opus 落盘器
 #include "audio_sdk/waveform.h"
 #include "audio_sdk/wave_ring.h"     // CWaveRing: 音频线程写、调用线程读的峰值环形缓冲
 #include "audio_sdk/logging.h"
@@ -28,6 +29,14 @@ static constexpr int kBytesPerFrame = CHANNELS * (BITS_PER_SAMPLE / 8);
 // AUDIO_SDK_BLOCK_MS 定)相当再推, 两个平台给调用方的数据节奏就一致了。
 static constexpr size_t kAccumSamples = SAMPLE_RATE * AUDIO_SDK_BLOCK_MS / 1000;
 
+static const char* FormatName(AudioSdkFormat fmt) {
+    switch (fmt) {
+    case AudioSdkFormat::OGG:  return "OGG";
+    case AudioSdkFormat::OPUS: return "OPUS";
+    default:                   return "WAV";
+    }
+}
+
 /**
  * @brief 音频录制实现(Android, PIMPL: AAudio 全部收在 Impl 内, 不泄露到接口头)
  */
@@ -46,16 +55,51 @@ struct CAudioRecorder::Impl{
     bool m_isPaused      = false;
     bool m_isAencEncrypt = true;
     AAudioStream* m_stream = nullptr;
-    CWavStreamWriter m_wavWriter;      
-    COggStreamWriter m_oggWriter;      
-    
-    std::atomic<bool> m_bOgg{false};
+    CWavStreamWriter m_wavWriter;
+    COggStreamWriter m_oggWriter;
+    COpusStreamWriter m_opusWriter;
+
+    // 本轮走哪个落盘器(跨线程读 → 原子)
+    std::atomic<AudioSdkFormat> m_fmt{AudioSdkFormat::WAV};
     AudioSdkFormat m_type = AudioSdkFormat::WAV;   // 落盘容器, 由 SetFormat 定(只在调用线程碰)
 
     std::string OutFile() const {
         const bool bEnc = m_isAencEncrypt;
-        if (m_bOgg.load(std::memory_order_relaxed)) return m_outputPath + (bEnc ? ".aogg" : ".ogg");
-        return m_outputPath + (bEnc ? ".aenc" : ".wav");
+        switch (m_fmt.load(std::memory_order_relaxed)) {
+        case AudioSdkFormat::OGG:  return m_outputPath + (bEnc ? ".aogg" : ".ogg");
+        case AudioSdkFormat::OPUS: return m_outputPath + (bEnc ? ".aopus" : ".opus");
+        default:                   return m_outputPath + (bEnc ? ".aenc" : ".wav");
+        }
+    }
+
+    // ---- 三种落盘器统一入口: 格式开录前定死, 音频线程只认 m_fmt ----
+    AudioSdk::AudioSdkState OpenWriter(const std::string& sFile, bool bEncrypt) {
+        switch (m_fmt.load(std::memory_order_relaxed)) {
+        case AudioSdkFormat::OGG:  return m_oggWriter.Open(sFile.c_str(), bEncrypt);
+        case AudioSdkFormat::OPUS: return m_opusWriter.Open(sFile.c_str(), bEncrypt);
+        default:                   return m_wavWriter.Open(sFile.c_str(), bEncrypt);
+        }
+    }
+    AudioSdk::AudioSdkState WritePcm(void* pcm, size_t n) {
+        switch (m_fmt.load(std::memory_order_relaxed)) {
+        case AudioSdkFormat::OGG:  return m_oggWriter.Write(pcm, n);
+        case AudioSdkFormat::OPUS: return m_opusWriter.Write(pcm, n);
+        default:                   return m_wavWriter.Write(pcm, n);
+        }
+    }
+    uint64_t WrittenBytes() const {
+        switch (m_fmt.load(std::memory_order_relaxed)) {
+        case AudioSdkFormat::OGG:  return m_oggWriter.GetWritten();
+        case AudioSdkFormat::OPUS: return m_opusWriter.GetWritten();
+        default:                   return m_wavWriter.GetWritten();
+        }
+    }
+    bool FinishWriter() {
+        switch (m_fmt.load(std::memory_order_relaxed)) {
+        case AudioSdkFormat::OGG:  return m_oggWriter.Finish();
+        case AudioSdkFormat::OPUS: return m_opusWriter.Finish();
+        default:                   return m_wavWriter.Finish();
+        }
     }
     // 已录字节数
     std::atomic<size_t> m_recordedBytes{0};
@@ -143,13 +187,11 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
 
     p->m_isRecording = true;
 
-    // 本轮走哪个写入器就在这儿定死 —— 往后的音频线程只认 m_bOgg
-    p->m_bOgg.store(p->m_type == AudioSdkFormat::OGG, std::memory_order_relaxed);
+    // 本轮走哪个写入器就在这儿定死 —— 往后的音频线程只认 m_fmt
+    p->m_fmt.store(p->m_type, std::memory_order_relaxed);
 
     const std::string outFile = p->OutFile();
-    const AudioSdk::AudioSdkState opened = p->m_bOgg.load(std::memory_order_relaxed)
-        ? p->m_oggWriter.Open(outFile.c_str(), p->m_isAencEncrypt)
-        : p->m_wavWriter.Open(outFile.c_str(), p->m_isAencEncrypt);
+    const AudioSdk::AudioSdkState opened = p->OpenWriter(outFile, p->m_isAencEncrypt);
     if (opened != AudioSdk::AudioSdkState::NONE) {
         AUDIO_LOG_ERROR(kTag, "开录时打不开落盘文件 \"%s\" -> 状态码 %d",
                         outFile.c_str(), static_cast<int>(opened));
@@ -168,8 +210,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
         AAudioStream_close(p->m_stream);
         p->m_stream = nullptr;
         // 文件已经建了(空的), 关掉别留着占 fd
-        if (p->m_bOgg.load(std::memory_order_relaxed)) p->m_oggWriter.Finish();
-        else                                           p->m_wavWriter.Finish();
+        p->FinishWriter();
         // 流已经开成功了, 这里再报 DEVICE_NOT_FOUND 是不实之词
         if (result == AAUDIO_ERROR_NO_MEMORY)
             return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
@@ -178,7 +219,7 @@ AudioSdk::AudioSdkState CAudioRecorder::StartRecording(){
 
     AUDIO_LOG_INFO(kTag, "开始录音 -> \"%s\" (%uch %uHz %ubit %s %s)",
                    outFile.c_str(), CHANNELS, SAMPLE_RATE, BITS_PER_SAMPLE,
-                   p->m_bOgg.load(std::memory_order_relaxed) ? "OGG" : "WAV",
+                   FormatName(p->m_fmt.load(std::memory_order_relaxed)),
                    p->m_isAencEncrypt ? "加密" : "明文");
     return AudioSdk::AudioSdkState::NONE;
 }
@@ -230,10 +271,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
     // 此刻回调已停, 不会再动 writer —— 这就是"先停流再收尾"的原因
     // (路径本身就是 UTF-8, 格式层收的也是 UTF-8)
     const std::string outFile = p->OutFile();
-    const bool bOgg = p->m_bOgg.load(std::memory_order_relaxed);
-    const size_t nBytes = static_cast<size_t>(bOgg ? p->m_oggWriter.Written()
-                                                   : p->m_wavWriter.Written());
-    const bool flushed = bOgg ? p->m_oggWriter.Finish() : p->m_wavWriter.Finish();
+    const size_t nBytes = static_cast<size_t>(p->WrittenBytes());
+    const bool flushed = p->FinishWriter();
     // 录制途中的写失败在那一刻就定了, 这里只取一次结果; 取走即清
     const int writeErr = p->m_writeErr.exchange(0, std::memory_order_acq_rel);
 
@@ -250,7 +289,8 @@ AudioSdk::AudioSdkState CAudioRecorder::StopRecording() {
         return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;
     }
 
-    const double secs = static_cast<double>(nBytes) /
+    // 时长按喂进去的 PCM 算 —— 压缩格式的文件字节数不等于播放时长
+    const double secs = static_cast<double>(p->m_recordedBytes.load(std::memory_order_relaxed)) /
                         (SAMPLE_RATE * CHANNELS * (BITS_PER_SAMPLE / 8));
     if (lost) {
         // 数据保住了, 但这一轮是被设备掉线打断的 —— 如实报, 别让调用方以为录全了
@@ -294,7 +334,6 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
         void* audioData, int32_t numFrames) {
     if (!m_isRecording.load(std::memory_order_acquire))
         return AAUDIO_CALLBACK_RESULT_STOP;       // 不该来的回调, 让它停
-    const bool bOgg = m_bOgg.load(std::memory_order_relaxed);
     const size_t bytes = static_cast<size_t>(numFrames) * kBytesPerFrame;
     auto* pcm = static_cast<const uint8_t*>(audioData);
 
@@ -320,8 +359,7 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
     }
 
     // 边录边写盘, 写不进说明盘满/设备出错，可看日志
-    auto ret = bOgg ? m_oggWriter.Write(audioData, bytes)
-                    : m_wavWriter.Write(audioData, bytes);
+    auto ret = WritePcm(audioData, bytes);
     if (ret != AudioSdk::AudioSdkState::NONE) {
         int iExpected = 0;
         m_writeErr.compare_exchange_strong(iExpected,
@@ -329,15 +367,15 @@ aaudio_data_callback_result_t CAudioRecorder::Impl::OnAudioReady(
             std::memory_order_relaxed);
         return AAUDIO_CALLBACK_RESULT_STOP;
     }
-    m_recordedBytes.store(bOgg ? m_oggWriter.Written() : m_wavWriter.Written(),
-                          std::memory_order_relaxed);
+    // 记的是喂进去的 PCM 字节(GetRecordedMs 的算法基准), 不是压缩后的文件大小
+    m_recordedBytes.fetch_add(bytes, std::memory_order_relaxed);
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
 /**
  * @brief 设置落盘容器(录制中不生效)
  * @note 录制中不生效的道理跟 SetAencEncrypt/SetOutputPath 一样: 这一轮"录成什么"
- *       应当开录前定死。真正决定走哪个写入器的是 StartRecording 里的 m_bOgg。
+ *       应当开录前定死。真正决定走哪个写入器的是 StartRecording 里的 m_fmt。
  */
 void CAudioRecorder::SetFormat(AudioSdkFormat format) {
     Impl* p = m_impl;
@@ -345,12 +383,13 @@ void CAudioRecorder::SetFormat(AudioSdkFormat format) {
         AUDIO_LOG_WARN(kTag, "录制中调 SetFormat(%d), 不生效", static_cast<int>(format));
         return;
     }
-    if (format != AudioSdkFormat::WAV && format != AudioSdkFormat::OGG) {
+    if (format != AudioSdkFormat::WAV && format != AudioSdkFormat::OGG &&
+        format != AudioSdkFormat::OPUS) {
         AUDIO_LOG_WARN(kTag, "暂不支持的格式 %d, 回退 WAV", static_cast<int>(format));
         format = AudioSdkFormat::WAV;
     }
     p->m_type = format;
-    AUDIO_LOG_INFO(kTag, "落盘容器 -> %s", format == AudioSdkFormat::OGG ? "OGG" : "WAV");
+    AUDIO_LOG_INFO(kTag, "落盘容器 -> %s", FormatName(format));
 }
 
 AudioSdkFormat CAudioRecorder::GetFormat() const { return m_impl->m_type; }

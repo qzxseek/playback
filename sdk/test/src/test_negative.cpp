@@ -409,7 +409,7 @@ static void TestStreamWriterErrors() {
     // ---- 没 Open 就用: 不能崩, 也不能说成功 ----
     {
         CWavStreamWriter w;
-        CHECK(w.Written() == 0, "没 Open 时 Written() 为 0");
+        CHECK(w.GetWritten() == 0, "没 Open 时 Written() 为 0");
         CHECK(w.Write(pcm, sizeof(pcm)) == AudioSdk::AudioSdkState::FILE_OPEN_FAILED,
               "没 Open 就 Write → FILE_OPEN_FAILED");
         CHECK(w.Finish(), "没 Open 就 Finish → true(本来就没东西要落)");
@@ -437,7 +437,7 @@ static void TestStreamWriterErrors() {
         CWavStreamWriter w;
         CHECK(w.Open(path.c_str(), false) == AudioSdk::AudioSdkState::NONE, "空录音: Open 成功");
         CHECK(w.Write(pcm, 0) == AudioSdk::AudioSdkState::NONE, "写 0 字节不算失败");
-        CHECK(w.Written() == 0, "写 0 字节不改已写字节数");
+        CHECK(w.GetWritten() == 0, "写 0 字节不改已写字节数");
         CHECK(w.Finish(), "空录音: Finish 成功");
 
         const std::vector<uint8_t> buf = tst::ReadAll(path);
@@ -488,7 +488,7 @@ static void TestWriteFailureReported() {
     }
     CHECK(reported, "写不进去时 Write 报出错(不是静默成功)");
     CHECK(tries < 64, "失败在头几次写内就被发现(不是拖到最后)");
-    CHECK(w.Written() == tries * sizeof(pcm),
+    CHECK(w.GetWritten() == tries * sizeof(pcm),
           "失败那一块没有被计进 Written() —— 字节数不能凭空涨");
 #else
     std::printf("  [skip] 命名管道是 Windows 专属\n");

@@ -43,7 +43,7 @@ public:
     AudioSdk::AudioSdkState Write(void* pcm, size_t n);
     bool Finish();
 
-    uint64_t Written() const { return m_iWritten; }   
+    uint64_t GetWritten() const { return m_iWritten; }   
 
 private:
     // 把编码管道推干净: 分析 → 分块 → 定型 → 打包 → 分页。各层含义见 .cpp
@@ -69,17 +69,6 @@ private:
 
 /**
  * @brief Ogg 解码读取器: 按 PCM 字节偏移取数据, 顺序读或跳读
- *
- * 解封装 + 解码都由 libvorbisfile 包了, 所以这个类只有"把页里的数据还原成 PCM"
- * 一件事。接进播放器要动的地方只有 PreparePlay 里面对文件的那三行
- * (seekg + read + XorCrypt) —— 喂料循环、Seek、进度条全都不用改, 因为它们
- * 只跟"已读 PCM 字节数 / 总 PCM 字节数"打交道, 不关心数据是怎么来的。
- *
- * 加密用【回调版】打开(ov_open_callbacks)而不是 ov_open(FILE*): 后者会接管并
- * fclose 传进去的 FILE*, 跟播放器自己持有的 ifstream 混用就是经典的 double close。
- * 用回调版才能自己管文件, 也才能在读的时候顺手解密。
- *
- * 线程约定: 与播放器一致 —— Open/Close 在调用线程, Read 在音频线程(不能抛异常)。
  */
 class COggStreamReader
 {

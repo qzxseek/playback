@@ -33,7 +33,7 @@
 #define BTN_OPEN_FILE       1006   // 打开文件按钮
 #define IDC_LBL_TIME        1007   // 时间/状态文字
 #define IDC_LBL_REC_TIME    1008   // 录音时间文字
-#define CMB_REC_FORMAT      1009   // 落盘格式下拉框(WAV / OGG)
+#define CMB_REC_FORMAT      1009   // 落盘格式下拉框(WAV / OGG / OPUS)
 
 // 波形不再用自定义窗口消息: 改拉模式后, 音频线程不会主动通知 UI,
 // 由 TIMER_PROGRESS 定时器每 100ms 去 SDK 拉一次(见 ConsumeWaveRing)。
@@ -231,7 +231,7 @@ private:
 
     bool m_encryptOn = true;
     // 落盘容器(下拉选的)。跟 m_encryptOn 一个套路: 记在 UI 侧, 每会话新建录音器时套用。
-    // 两者一起决定后缀 —— WAV→.wav/.aenc, OGG→.ogg/.aogg。默认 WAV, 与老行为一致。
+    // 两者一起决定后缀 —— WAV→.wav/.aenc, OGG→.ogg/.aogg, OPUS→.opus/.aopus
     AudioSdkFormat m_recFormat = AudioSdkFormat::WAV;
     AudioRecSdkApi m_recApi;         
     AudioPlaSdkApi m_playApi;        
@@ -274,7 +274,7 @@ private:
     HWND m_hBtnRec_Start_Stop  = NULL;   // 开始/停止录音
     HWND m_hBtnRecPause        = NULL;   // 暂停/继续录音
     HWND m_hChkEnc             = NULL;   // 加密复选框
-    HWND m_hCmbFormat          = NULL;   // 落盘格式下拉(WAV / OGG)
+    HWND m_hCmbFormat          = NULL;   // 落盘格式下拉(WAV / OGG / OPUS)
     HWND m_hBtnOpen            = NULL;   // 打开文件
     HWND m_hBtnPlay_Start_Stop = NULL;   // 播放/停止播放按当前状态
     HWND m_hBtnPlayPause       = NULL;   // 暂停/继续播放

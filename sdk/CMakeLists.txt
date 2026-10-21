@@ -31,6 +31,7 @@ set(SDK_COMMON_SOURCES
     src/common/wav_format.cpp
     src/common/encrypted_format.cpp
     src/common/ogg_format.cpp      # ogg/vorbis 编解码(压缩格式层)
+    src/common/opus_format.cpp     # opus 编码(压缩格式层;
     src/common/waveform.cpp        # 波形峰值计算(两平台共用)
     src/common/wave_ring.cpp       # 波形环形缓冲(两平台共用, 实现自 wave_ring.h 抽出)
     src/common/byte_ring.cpp       # 字节环形缓冲(流式播放: 生产者读文件 / 音频回调取数据)
@@ -43,10 +44,7 @@ add_library(audio_sdk SHARED
     ${SDK_COMMON_SOURCES}
     src/common/wav_validate.cpp
     src/common/audio_c_api.cpp     # C 接口层(extern "C" 导出, 供 Windows UI 显式加载)
-    src/common/opus_format.cpp     # opus 编码(依赖下面的 opus 包 + opusenc 目标)
 )
-# 注: opus_format.cpp 没进 SDK_COMMON_SOURCES —— 测试目标不碰 opus,
-# 拖进去就得让四个测试也链 opus 包。将来测试要用 opus 时再挪进公共列表。
 
 target_include_directories(audio_sdk PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -121,7 +119,7 @@ target_compile_definitions(opusenc PRIVATE
     PACKAGE_NAME="libopusenc"
     PACKAGE_VERSION="0.3"
 )
-target_link_libraries(opusenc PRIVATE Opus::opus)
+target_link_libraries(opusenc PUBLIC Opus::opus)
 
 target_link_libraries(audio_sdk PRIVATE opusenc)
 
@@ -152,10 +150,16 @@ if(WIN32)
 
         target_link_libraries(${test_name} PRIVATE
             ${PLATFORM_LIBS}
-            Vorbis::vorbisenc Vorbis::vorbisfile)
+            Vorbis::vorbisenc Vorbis::vorbisfile
+            opusenc)
         target_compile_definitions(${test_name} PRIVATE AUDIO_SDK_STATIC)
         set_target_properties(${test_name} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test
+        )
+        add_custom_command(TARGET ${test_name} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:Opus::opus>"
+                    "$<TARGET_FILE_DIR:${test_name}>"
         )
     endforeach()
 endif()

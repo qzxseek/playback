@@ -11,6 +11,7 @@
 #include "audio_sdk/audio_player.h"
 #include "audio_sdk/audio_recorder.h"
 #include "audio_sdk/encrypted_format.h"
+#include "audio_sdk/opus_format.h"
 #include "audio_sdk/wav_format.h"
 #include "audio_sdk/wav_validate.h"
 #include "audio_sdk/waveform.h"
@@ -232,7 +233,7 @@ static void TestStreamPlumbing() {
                 pos += n;
             }
             CHECK(ok, "流式写: 每一块都写进去了");
-            CHECK(w.Written() == pcmBytes, "Written() == 写进去的 PCM 字节数");
+            CHECK(w.GetWritten() == pcmBytes, "Written() == 写进去的 PCM 字节数");
             CHECK(w.Finish(), "流式写: Finish 成功");
             CHECK(w.Finish(), "Finish 可重复调用(析构还会再调一次)");
         }
@@ -280,7 +281,7 @@ static void TestStreamPlumbing() {
         CHECK(ok, "增量: 256KB 全部写入");
 
         const std::vector<uint8_t> mid = tst::ReadAll(path);
-        std::printf("         Finish 前盘上已有 %zu / %zu 字节\n", mid.size(), w.Written());
+        std::printf("         Finish 前盘上已有 %zu / %zu 字节\n", mid.size(), w.GetWritten());
         CHECK(mid.size() >= big.size() - 64 * 1024,
               "Finish 之前数据就陆续写到盘上了(只有一小截还在流缓冲里)");
 
@@ -454,6 +455,133 @@ static void TestRecordPipeline() {
 }
 
 /**
+ * @brief Opus 编解码往返: 写 .opus/.aopus → 用 COpusStreamReader 解回来
+ * @note 不需要设备。解码链(拆页/解密/重采样回放/跳转/波形)只有这一条自动化检查,
+ *       编码器、容器或分页哪一环坏了都会在这里挂
+ */
+static void TestOpusRoundTrip() {
+    const std::vector<uint8_t> src = tst::MakeWav(SAMPLE_RATE);   // 1 秒 440Hz 正弦
+    const size_t pcmBytes = src.size() - sizeof(WavHeader);
+
+    for (int enc = 0; enc < 2; ++enc) {
+        const bool bEnc = (enc == 1);
+        const std::string path = bEnc ? "t_opus_roundtrip.aopus" : "t_opus_roundtrip.opus";
+        std::remove(path.c_str());
+
+        {
+            COpusStreamWriter w;
+            CHECK(w.Open(path.c_str(), bEnc) == AudioSdk::AudioSdkState::NONE, "Opus: Open 成功");
+            CHECK(w.Write(const_cast<uint8_t*>(src.data()) + sizeof(WavHeader), pcmBytes)
+                      == AudioSdk::AudioSdkState::NONE, "Opus: 写入 PCM");
+            CHECK(w.Finish(), "Opus: Finish 成功");
+        }
+
+        COpusStreamReader r;
+        CHECK(r.Open(path.c_str()) == AudioSdk::AudioSdkState::NONE, "Opus: 解码器 Open 成功");
+        CHECK(r.GetChannels() == CHANNELS, "Opus: 声道数一致");
+        CHECK(r.GetSampleRate() == 48000, "Opus: 解码采样率 48k");
+        CHECK(r.GetBlockAlign() == CHANNELS * (BITS_PER_SAMPLE / 8), "Opus: blockAlign 一致");
+
+        // 44.1k → 48k 重采样后 1 秒是 48000 个采样 = 96000 字节
+        const size_t total = r.GetTotalBytes();
+        std::printf("         %s: %zu 字节 PCM (%.3f s)\n",
+                    bEnc ? "aopus" : "opus", total, total / 96000.0);
+        CHECK(total + 4000 >= 96000 && total <= 100000, "Opus: 总时长 ≈ 1 秒");
+
+        // 波形图入口要能整条扫一遍(必须在 Read 到 EOF 之前)
+        std::vector<float> peaks(CWaveform::kFilePoints * 2, 0.0f);
+        CHECK(r.BuildPeaks(peaks.data(), CWaveform::kFilePoints, nullptr, nullptr)
+                  == AudioSdk::AudioSdkState::NONE, "Opus: BuildPeaks 成功");
+        bool anyPeak = false;
+        for (float v : peaks) if (v != 0.0f) { anyPeak = true; break; }
+        CHECK(anyPeak, "Opus: BuildPeaks 填出了非零峰值");
+
+        // 重新开一份, 从头读全
+        CHECK(r.Open(path.c_str()) == AudioSdk::AudioSdkState::NONE, "Opus: 重新 Open 成功");
+        std::vector<uint8_t> out(total);
+        CHECK(r.Read(out.data(), out.size()) == total, "Opus: 从头读完整个文件");
+        CHECK(r.Read(out.data(), out.size()) == 0, "Opus: 读到底后返回 0");
+
+        float mm[2] = {};
+        CWaveform::ComputePeaks(out.data(), out.size(), mm, 1);
+        CHECK(mm[1] > 0.2f && mm[0] < -0.2f, "Opus: 解出来的是真实波形, 不是静音");
+
+        // 跳转: 从中间续读, 内容还得是波形(定位没落错地方)
+        CHECK(r.SeekTo(total / 2) == AudioSdk::AudioSdkState::NONE, "Opus: SeekTo 成功");
+        std::vector<uint8_t> mid(48000);    // 0.5 秒(单声道 16bit)
+        const size_t got = r.Read(mid.data(), mid.size());
+        CHECK(got == mid.size(), "Opus: 跳转后能继续读");
+        float mmMid[2] = {};
+        CWaveform::ComputePeaks(mid.data(), got, mmMid, 1);
+        CHECK(got > 0 && mmMid[1] > 0.2f, "Opus: 跳转位置解出来的也是波形");
+
+        r.Close();
+        std::remove(path.c_str());
+    }
+}
+
+/**
+ * @brief OPUS 落盘: 录 1 秒, 产物必须是合法的 Ogg Opus(.aopus 先解壳)
+ * @note 需要麦克风。只看扩展名不够 —— 得看容器里的字节, 才能证明 recorder
+ *       真的把 PCM 交给了 COpusStreamWriter, 而不是悄悄退回 WAV。
+ */
+static void TestRecordOpus() {
+    const std::string base = "t_record_opus";
+    const std::string file = base + ".aopus";
+    std::remove(file.c_str());
+
+    CAudioRecorder rec;
+    rec.SetOutputPath(base.c_str());
+    rec.SetFormat(AudioSdkFormat::OPUS);
+    tst::SetEncrypt(rec, true);
+    CHECK(rec.GetFormat() == AudioSdkFormat::OPUS, "SetFormat(OPUS) 生效, 没回退 WAV");
+
+    const AudioSdk::AudioSdkState st = rec.StartRecording();
+    if (tst::DeviceUnavailable(st)) { tst::Skip("opus 落盘", "没有可用录音设备"); return; }
+    CHECK(st == AudioSdk::AudioSdkState::NONE, "StartRecording 返回 NONE");
+    if (st != AudioSdk::AudioSdkState::NONE) return;
+
+    ::Sleep(1000);
+    CHECK(rec.StopRecording() == AudioSdk::AudioSdkState::NONE, "StopRecording 返回 NONE");
+
+    std::vector<uint8_t> buf = tst::ReadAll(file);
+    CHECK(buf.size() > CEncryptedFormat::kAencPrefixSize, "落盘文件存在且非空");
+    if (buf.size() <= CEncryptedFormat::kAencPrefixSize) return;
+    CHECK(std::memcmp(buf.data(), CEncryptedFormat::kAopusMagic,
+                      CEncryptedFormat::kAopusMagicSize) == 0, "开头是 AOPU 魔数");
+
+    // 解壳: 前缀明文直写, 后面的 XOR 相位从 0 起
+    std::vector<uint8_t> p(buf.begin() + CEncryptedFormat::kAencPrefixSize, buf.end());
+    CEncryptedFormat::XorCrypt(p.data(), p.size(), 0);
+    CHECK(p.size() > 27 && std::memcmp(p.data(), "OggS", 4) == 0, "解壳后是 Ogg 流");
+    if (p.size() <= 27) return;
+    const size_t hlen = 27 + p[26];
+    CHECK(hlen + 8 <= p.size() && std::memcmp(p.data() + hlen, "OpusHead", 8) == 0,
+          "第一页第一个包是 OpusHead");
+
+    // 逐页走一遍, 拿最后一个非 -1 的 granulepos 算可播时长
+    long long gp = 0;
+    size_t off = 0;
+    while (off + 27 <= p.size() && std::memcmp(p.data() + off, "OggS", 4) == 0) {
+        long long g = 0;
+        std::memcpy(&g, p.data() + off + 6, 8);
+        if (g > 0) gp = g;
+        const size_t nseg = p[off + 26];
+        if (off + 27 + nseg > p.size()) break;
+        size_t blen = 0;
+        for (size_t i = 0; i < nseg; ++i) blen += p[off + 27 + i];
+        off += 27 + nseg + blen;
+    }
+
+    // granulepos 含 pre-skip(单声道 libopusenc 是 312), 可播时长要减掉
+    const long long playableMs = (gp > 312 ? gp - 312 : 0) * 1000 / 48000;
+    std::printf("         granulepos=%lld -> 可播 %.3fs\n", gp, playableMs / 1000.0);
+    CHECK(playableMs > 800 && playableMs < 1600, "可播时长在录的 1 秒附近");
+
+    std::remove(file.c_str());
+}
+
+/**
  * @brief 播放明文 WAV: 总长对得上 → 自然播完 → 位置推进到末尾
  * @note 需要声卡
  */
@@ -494,6 +622,59 @@ static void TestPlayWav() {
 
     player.StopPlay();
     std::remove(path.c_str());
+}
+
+/**
+ * @brief 播放 .opus / .aopus: 播放器认得出 Opus 分支, 能起播、取波形、自然播完
+ * @note 需要声卡。这是"解码器接进播放链"的端到端验证
+ */
+static void TestPlayOpus() {
+    const std::vector<uint8_t> wav = tst::MakeWav(SAMPLE_RATE / 2);   // 0.5 秒
+    const size_t pcmBytes = wav.size() - sizeof(WavHeader);
+
+    for (int enc = 0; enc < 2; ++enc) {
+        const bool bEnc = (enc == 1);
+        const std::string path = bEnc ? "t_play_opus.aopus" : "t_play_opus.opus";
+        std::remove(path.c_str());
+        {
+            COpusStreamWriter w;
+            if (w.Open(path.c_str(), bEnc) != AudioSdk::AudioSdkState::NONE) {
+                CHECK(false, "播放 Opus: 造测试文件失败");
+                continue;
+            }
+            w.Write(const_cast<uint8_t*>(wav.data()) + sizeof(WavHeader), pcmBytes);
+            w.Finish();
+        }
+
+        CAudioPlayer player;
+        const AudioSdk::AudioSdkState st = player.PlayWavFile(path.c_str());
+        if (tst::DeviceUnavailable(st)) {
+            tst::Skip("播放 Opus", "没有可用播放设备");
+            std::remove(path.c_str());
+            return;
+        }
+        CHECK(st == AudioSdk::AudioSdkState::NONE, "播放 Opus: PlayWavFile 返回 NONE");
+        if (st != AudioSdk::AudioSdkState::NONE) { std::remove(path.c_str()); continue; }
+
+        const uint32_t totalMs = player.GetTotalPosMs();
+        std::printf("         %s 总时长 %u ms\n", bEnc ? "aopus" : "opus", totalMs);
+        CHECK(totalMs > 400 && totalMs < 600, "播放 Opus: 总时长 ≈ 500ms");
+
+        // 波形图走的是另开一份解码器, 顺带验一下
+        float peaks[CWaveform::kFilePoints * 2] = {};
+        player.BuildWaveform([](const float* mm, int n, void* d) {
+            if (n > 0) { static_cast<float*>(d)[0] = mm[0]; static_cast<float*>(d)[1] = mm[1]; }
+        }, peaks);
+        CHECK(peaks[1] > 0.2f, "播放 Opus: 取到了非零波形");
+
+        const DWORD t0 = ::GetTickCount();
+        while (player.IsPlaying() && ::GetTickCount() - t0 < 2000) ::Sleep(20);
+        CHECK(!player.IsPlaying(), "播放 Opus: 自然播完");
+        CHECK(player.GetPlayPos() >= player.GetTotalPos() * 9 / 10, "播放 Opus: 位置推进到接近末尾");
+
+        player.StopPlay();
+        std::remove(path.c_str());
+    }
 }
 
 /**
@@ -577,9 +758,12 @@ int main() {
     RUN(TestAencRoundTrip);
     RUN(TestExtraChunkOffsets);
     RUN(TestStreamPlumbing);
+    RUN(TestOpusRoundTrip);
     RUN(TestRecordStreamsToDisk);
     RUN(TestRecordPipeline);
+    RUN(TestRecordOpus);
     RUN(TestPlayWav);
+    RUN(TestPlayOpus);
     RUN(TestPlayAenc);
     RUN(TestRecordThenPlay);
     return tst::Summary("正向");

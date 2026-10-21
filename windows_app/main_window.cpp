@@ -349,6 +349,7 @@ void CMainWindows::CreateControls(HWND hwnd){
         hwnd, (HMENU)(INT_PTR)CMB_REC_FORMAT, hInst, NULL);
     SendMessageW(m_hCmbFormat, CB_ADDSTRING, 0, (LPARAM)L"WAV");
     SendMessageW(m_hCmbFormat, CB_ADDSTRING, 0, (LPARAM)L"OGG");
+    SendMessageW(m_hCmbFormat, CB_ADDSTRING, 0, (LPARAM)L"OPUS");
     SendMessageW(m_hCmbFormat, CB_SETCURSEL, 0, 0);   // 默认第 0 项 = WAV, 与 m_recFormat 初值一致
     m_hLblRecTime = CreateWindowEx(0, L"STATIC", L"录音时长: 00:00.0",
         WS_CHILD | WS_VISIBLE | SS_RIGHT,
@@ -514,10 +515,13 @@ void CMainWindows::OnCommand(int iId){
         SendMessageW(m_hChkEnc, BM_SETCHECK,
                      m_encryptOn ? BST_CHECKED : BST_UNCHECKED, 0);
         break;
-    case CMB_REC_FORMAT:                   // 落盘格式下拉(只有 WAV / OGG 两项)
-        m_recFormat = (SendMessageW(m_hCmbFormat, CB_GETCURSEL, 0, 0) == 1)
-                          ? AudioSdkFormat::OGG : AudioSdkFormat::WAV;
+    case CMB_REC_FORMAT: {                 // 落盘格式下拉(WAV / OGG / OPUS)
+        const LRESULT idx = SendMessageW(m_hCmbFormat, CB_GETCURSEL, 0, 0);
+        m_recFormat = (idx == 1) ? AudioSdkFormat::OGG
+                    : (idx == 2) ? AudioSdkFormat::OPUS
+                                 : AudioSdkFormat::WAV;
         break;
+    }
     case BTN_OPEN_FILE:
         OpenFileDialog(m_hwnd);
         break;
@@ -652,14 +656,10 @@ void CMainWindows::OnSdkDone(UINT op, UINT lane, int state){
             MessageBoxW(m_hwnd, L"内存不足，录音数据不完整（已保存录到的部分）",
                         L"录音", MB_OK | MB_ICONWARNING);
         else if (state == static_cast<int>(AudioSdk::AudioSdkState::DEVICE_NOT_FOUND))
-            // 设备中途被拔: 文件确实存下来了, 只是这一轮不完整。
-            // 说"保存失败"是误导(文件在), 说"已保存"也不对(用户会以为录全了)。
             MessageBoxW(m_hwnd, L"录音设备被断开，数据不完整（已保存录到的部分）",
                         L"录音", MB_OK | MB_ICONWARNING);
         else if (writeAbort)
-            // 盘满/磁盘出错把这一轮打断了(定时器发现后替用户停的)。
-            // 文件是收尾正常写完的, 只是个短 —— 所以提示里要带真实文件名,
-            // 用户要能直接去清盘或改输出目录, 光说"失败"他不知道东西在哪。
+            // 盘满/磁盘出错把这一轮打断了(定时器发现后替用户停的)
             MessageBoxW(m_hwnd, L"录音中断：磁盘写不进去（通常是空间不足），"
                                 L"数据不完整（已保存录到的部分）。\n请清理磁盘或换个输出目录后重录。",
                         L"录音", MB_OK | MB_ICONWARNING);
@@ -667,9 +667,9 @@ void CMainWindows::OnSdkDone(UINT op, UINT lane, int state){
             MessageBoxW(m_hwnd, L"录音保存失败", L"录音", MB_OK | MB_ICONERROR);
         else{
             // 后缀由"容器 + 加不加密"两维决定
-            const wchar_t* ext = (m_recFormat == AudioSdkFormat::OGG)
-                                     ? (m_encryptOn ? L".aogg" : L".ogg")
-                                     : (m_encryptOn ? L".aenc" : L".wav");
+            const wchar_t* ext = (m_recFormat == AudioSdkFormat::OGG)  ? (m_encryptOn ? L".aogg"  : L".ogg")
+                               : (m_recFormat == AudioSdkFormat::OPUS) ? (m_encryptOn ? L".aopus" : L".opus")
+                                                                       : (m_encryptOn ? L".aenc"  : L".wav");
             swprintf_s(msg, std::size(msg), L"录音已保存为 %s%s", name.c_str(), ext);
             MessageBoxW(m_hwnd, msg, L"录音", MB_OK | MB_ICONINFORMATION);
         }
@@ -731,7 +731,8 @@ bool CMainWindows::OpenFileDialog(HWND hwndOwner){
     OPENFILENAMEW ofn = {};
     ofn.lStructSize  = sizeof(ofn);                       // 结构体大小(必须填)
     ofn.hwndOwner    = hwndOwner;                         // 父窗口
-    ofn.lpstrFilter  = L"音频文件 (*.wav;*.aenc;*.ogg;*.aogg)\0*.wav;*.aenc;*.ogg;*.aogg\0"
+    ofn.lpstrFilter  = L"音频文件 (*.wav;*.aenc;*.ogg;*.aogg;*.opus;*.aopus)\0"
+                       L"*.wav;*.aenc;*.ogg;*.aogg;*.opus;*.aopus\0"
                        L"所有文件 (*.*)\0*.*\0\0";
     ofn.lpstrFile    = file;                              // 选中的路径写这里
     ofn.nMaxFile     = MAX_PATH;                          // 缓冲长度
@@ -742,10 +743,11 @@ bool CMainWindows::OpenFileDialog(HWND hwndOwner){
     m_curFile = file;                                     // 记住完整路径
 
     // 可选: 在窗口标题上显示当前文件, 直观反馈选到了什么。
-    // .aenc 认魔数(SDK 现成的), .aogg 按后缀 —— 为这一行提示再导出个 IsAoggFile 不值当。
+    // .aenc 认魔数(SDK 现成的), .aogg/.aopus 按后缀 —— 为这一行提示再导出个判断函数不值当。
     const std::wstring wpath(file);                       // file 是裸数组, 没 size()/compare()
     const bool bEnc = m_recApi.IsAencFile(WideToUtf8(file).c_str()) ||
-                      (wpath.size() >= 5 && wpath.compare(wpath.size() - 5, 5, L".aogg") == 0);
+                      (wpath.size() >= 5 && wpath.compare(wpath.size() - 5, 5, L".aogg") == 0) ||
+                      (wpath.size() >= 6 && wpath.compare(wpath.size() - 6, 6, L".aopus") == 0);
     std::wstring title = L"Win32 音频播放器 - ";
     title += file;
     title += bEnc ? L"  (加密)" : L"  (明文)";

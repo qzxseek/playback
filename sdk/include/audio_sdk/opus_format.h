@@ -18,6 +18,20 @@
 struct OggOpusEnc;
 
 /**
+ * @brief Opus 容器的识别(播放侧用)
+ */
+class COpusFormat
+{
+public:
+    static constexpr char kOpusHead[8] = { 'O', 'p', 'u', 's', 'H', 'e', 'a', 'd' };
+
+    // 明文 .opus
+    static bool IsOpusData(const uint8_t* data, size_t size);
+    // 加密 .aopus
+    static bool IsAopusData(const uint8_t* data, size_t size);
+};
+
+/**
  * @brief Opus 边录边编码落盘器: 开头写好头页 → 边录边编成页追加 → 收尾
  */
 class COpusStreamWriter
@@ -32,7 +46,7 @@ public:
     AudioSdk::AudioSdkState Write(void* pcm, size_t n);
     bool Finish();
 
-    uint64_t GetWritten() const { return m_iWritten; }
+    uint64_t GetWritten() const { return m_iWritten; } 
 
 private:
     // 给 libopusenc 的写回调: 它攒够一页就调一次, 我们在这儿加密落盘。
@@ -51,4 +65,43 @@ private:
     bool     m_bOpen = false;
     bool     m_bEncrypt = false;
     uint64_t m_iWritten = 0;             // 已写的载荷字节数, 也是下一段的 XOR 相位
+};
+
+/**
+ * @brief Opus 流式解码器: 输入 .opus / .aopus, 输出交错 16bit PCM。
+ */
+class COpusStreamReader
+{
+public:
+    COpusStreamReader();
+    ~COpusStreamReader();
+
+    AudioSdk::AudioSdkState Open(const char* utf8Path);
+    void Close();
+
+    bool IsOpen() const { return m_bOpen; }
+    int32_t  GetChannels() const { return m_iChannels; }
+    int32_t  GetSampleRate() const { return kRate; }
+    uint16_t GetBlockAlign() const { return m_iBlockAlign; }
+    uint16_t GetBitsPerSample() const { return BITS_PER_SAMPLE; }
+    size_t   GetTotalBytes() const { return m_nTotalBytes; }
+
+    // 最多读 n 字节; 返回实际读到的字节数(0 = 到头)
+    size_t Read(uint8_t* dst, size_t n);
+    // 跳到 PCM 字节位置(按 blockAlign 取整), 供进度条拖动
+    AudioSdk::AudioSdkState SeekTo(size_t pcmBytes);
+    // 整段扫一遍算峰值, 给波形图用
+    AudioSdk::AudioSdkState BuildPeaks(float* out, int points,
+                                       AudioSdkWaveCallback cb, void* userData);
+
+private:
+    struct Impl;                         // ogg/opus 状态都在这里, 不往头文件里拖 <ogg/ogg.h>/<opus/opus.h>
+    Impl* m_impl = nullptr;
+
+    static constexpr int kRate = 48000;  // Opus 解码出来永远是 48k
+
+    bool    m_bOpen = false;
+    int32_t m_iChannels = 0;
+    uint16_t m_iBlockAlign = 0;
+    size_t  m_nTotalBytes = 0;
 };

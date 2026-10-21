@@ -6,7 +6,8 @@
 #include "audio_sdk/wav_validate.h"
 #include "audio_sdk/wav_format.h"
 #include "audio_sdk/encrypted_format.h"
-#include "audio_sdk/ogg_format.h"       // COggStreamReader: 压缩流的解码器
+#include "audio_sdk/ogg_format.h"       
+#include "audio_sdk/opus_format.h"     
 #include "audio_sdk/waveform.h"
 #include "audio_sdk/logging.h"
 
@@ -81,8 +82,11 @@ struct CAudioPlayer::Impl
     HANDLE m_hWakeEvent = NULL;               // 唤醒事件句柄   生产者唤醒消费者
     HANDLE m_hStopEvent = NULL;               // 停止事件句柄
 
-    COggStreamReader m_oggReader;
-    std::atomic<bool> m_bOgg{false};
+    // 压缩流用哪个解码器: 两条链流程一样, 只是读 PCM 的入口不同
+    enum class ReaderKind { None, Ogg, Opus };
+    COggStreamReader  m_oggReader;
+    COpusStreamReader m_opusReader;
+    std::atomic<ReaderKind> m_reader{ReaderKind::None};
 };
 
 CAudioPlayer::CAudioPlayer() : m_impl(new Impl()) {}
@@ -160,9 +164,28 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    const WavHeader* pHdr = nullptr;
    bool bEncrypted  = false;
    bool bOgg        = false;
+   bool bOpus       = false;
    size_t payloadOffset = 0;
 
-   if (COggFormat::IsOggData(vecBuf.data(), vecBuf.size())){
+   // Opus 也是 OggS 开头, 必须排在 COggFormat 前面, 靠第一页的 OpusHead 区分
+   if (COpusFormat::IsAopusData(vecBuf.data(), vecBuf.size())){
+      const AudioSdk::AudioSdkState ost = p->m_opusReader.Open(utf8Path);
+      if (ost != AudioSdk::AudioSdkState::NONE) {
+         AUDIO_LOG_ERROR(kTag, "Aopus 打不开 path=\"%s\" -> 状态码 %d", utf8Path, static_cast<int>(ost));
+         return ost;
+      }
+      bOpus      = true;
+      bEncrypted = true;
+   }
+   else if (COpusFormat::IsOpusData(vecBuf.data(), vecBuf.size())){
+      const AudioSdk::AudioSdkState ost = p->m_opusReader.Open(utf8Path);
+      if (ost != AudioSdk::AudioSdkState::NONE) {
+         AUDIO_LOG_ERROR(kTag, "Opus 打不开 path=\"%s\" -> 状态码 %d", utf8Path, static_cast<int>(ost));
+         return ost;
+      }
+      bOpus = true;
+   }
+   else if (COggFormat::IsOggData(vecBuf.data(), vecBuf.size())){
 
       const AudioSdk::AudioSdkState ost = p->m_oggReader.Open(utf8Path);
       if (ost != AudioSdk::AudioSdkState::NONE) {
@@ -214,20 +237,30 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    }
 
    p->m_path = utf8Path;
-   p->m_bOgg.store(bOgg, std::memory_order_relaxed);
+   p->m_reader.store(bOpus ? Impl::ReaderKind::Opus
+                   : bOgg  ? Impl::ReaderKind::Ogg
+                           : Impl::ReaderKind::None,
+                    std::memory_order_relaxed);
    p->m_fmt  = {};
    p->m_fmt.wFormatTag = WAVE_FORMAT_PCM;
 
-   if (bOgg){
-      p->m_fmt.nChannels      = static_cast<WORD>(p->m_oggReader.GetChannels());
-      p->m_fmt.nSamplesPerSec = static_cast<DWORD>(p->m_oggReader.GetSampleRate());
-      p->m_fmt.wBitsPerSample = p->m_oggReader.GetBitsPerSample();
-      p->m_fmt.nBlockAlign    = p->m_oggReader.GetBlockAlign();
+   if (bOgg || bOpus){
+      // 两条解码链的接口一一对应, 取值时二选一
+      const int32_t iChannels = bOpus ? p->m_opusReader.GetChannels()      : p->m_oggReader.GetChannels();
+      const int32_t iRate     = bOpus ? p->m_opusReader.GetSampleRate()    : p->m_oggReader.GetSampleRate();
+      const uint16_t wBits    = bOpus ? p->m_opusReader.GetBitsPerSample() : p->m_oggReader.GetBitsPerSample();
+      const uint16_t wAlign   = bOpus ? p->m_opusReader.GetBlockAlign()    : p->m_oggReader.GetBlockAlign();
+      const size_t nTotal     = bOpus ? p->m_opusReader.GetTotalBytes()    : p->m_oggReader.GetTotalBytes();
+
+      p->m_fmt.nChannels      = static_cast<WORD>(iChannels);
+      p->m_fmt.nSamplesPerSec = static_cast<DWORD>(iRate);
+      p->m_fmt.wBitsPerSample = wBits;
+      p->m_fmt.nBlockAlign    = wAlign;
       // 解码器只吐 16bit PCM, 每秒字节数按定义算就行
       p->m_fmt.nAvgBytesPerSec = p->m_fmt.nSamplesPerSec * p->m_fmt.nBlockAlign;
       p->m_encrypted     = false;           // 解密在解码器内部做, 这里再解一遍就是解回密文
       p->m_payloadOffset = 0;               // 压缩流用不上文件偏移, 解码器自己记位置
-      p->m_dataSize      = p->m_oggReader.GetTotalBytes();
+      p->m_dataSize      = nTotal;
    }
    else {
       p->m_payloadOffset = payloadOffset;
@@ -311,8 +344,9 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
    // 成功: 记"播的是哪个文件 + 什么格式"。要回答的是"当时放的是不是我以为的那个" ——
    // 路径给这个答案, 格式和时长给"内容有没有被截断/是不是变样了"
    const uint32_t byteRate = p->m_fmt.nAvgBytesPerSec;
-   const char* const container = bOgg ? (bEncrypted ? "aogg" : "ogg")
-                                      : (bEncrypted ? "aenc" : "wav");
+   const char* const container = bOpus ? (bEncrypted ? "aopus" : "opus")
+                               : bOgg  ? (bEncrypted ? "aogg"  : "ogg")
+                                       : (bEncrypted ? "aenc"  : "wav");
    AUDIO_LOG_INFO(kTag, "开始播放 path=\"%s\" %s %uch %uHz %ubit %.2fs (%zu 字节 PCM)",
                   utf8Path, container,
                   p->m_fmt.nChannels, p->m_fmt.nSamplesPerSec, p->m_fmt.wBitsPerSample,
@@ -382,8 +416,11 @@ bool CAudioPlayer::Impl::PreparePlay(){
 
       size_t szData = min(block.vecData.size(), m_dataSize - m_readPos);   // 尾块可能不足一整块
 
-      if (m_bOgg.load(std::memory_order_relaxed)){
-         szData = m_oggReader.Read(block.vecData.data(), szData);
+      const ReaderKind eKind = m_reader.load(std::memory_order_relaxed);
+      if (eKind != ReaderKind::None){
+         szData = (eKind == ReaderKind::Opus)
+                      ? m_opusReader.Read(block.vecData.data(), szData)
+                      : m_oggReader.Read(block.vecData.data(), szData);
          if (szData == 0) {           // 读干净了(或解码出错): 当作文件到此为止
             m_readPos = m_dataSize;
             return false;
@@ -440,8 +477,9 @@ void CAudioPlayer::Impl::CleanUpDevice(){
    }
    if (m_file.is_open())
       m_file.close();
-   m_oggReader.Close();          
-   m_bOgg.store(false, std::memory_order_relaxed);              
+   m_oggReader.Close();
+   m_opusReader.Close();
+   m_reader.store(ReaderKind::None, std::memory_order_relaxed);
    if (m_csInit){
       DeleteCriticalSection(&m_cs);
       m_csInit = false;
@@ -478,8 +516,11 @@ AudioSdk::AudioSdkState CAudioPlayer::Seek(uint32_t posBytes){
       block.waveHdr.dwFlags = 0;           // 清 DONE/PREPARED 位, 供下次复用
    }
    p->m_readPos = posBytes;
-   // Ogg 必须让解码器一起跳
-   if (p->m_bOgg.load(std::memory_order_relaxed))
+   // 压缩流必须让解码器一起跳
+   const Impl::ReaderKind eKind = p->m_reader.load(std::memory_order_relaxed);
+   if (eKind == Impl::ReaderKind::Opus)
+      p->m_opusReader.SeekTo(posBytes);
+   else if (eKind == Impl::ReaderKind::Ogg)
       p->m_oggReader.SeekTo(posBytes);
    LeaveCriticalSection(&p->m_cs);
 
@@ -592,7 +633,15 @@ void CAudioPlayer::BuildWaveform(AudioSdkWaveCallback cb, void* userData){
    // 用栈上的定长缓冲: 1024 点 × 2 × 4 字节 = 8KB, 栈上放得下, 不必分配堆内存
    float minmax[CWaveform::kFilePoints * 2] = {};
 
-   if (p->m_bOgg.load(std::memory_order_relaxed)){
+   const Impl::ReaderKind eKind = p->m_reader.load(std::memory_order_relaxed);
+   if (eKind == Impl::ReaderKind::Opus){
+      COpusStreamReader r;
+      if (r.Open(p->m_path.c_str()) != AudioSdk::AudioSdkState::NONE)
+         return;                                          // 打不开, 当没加载
+      r.BuildPeaks(minmax, CWaveform::kFilePoints, cb, userData);
+      return;
+   }
+   if (eKind == Impl::ReaderKind::Ogg){
       COggStreamReader r;
       if (r.Open(p->m_path.c_str()) != AudioSdk::AudioSdkState::NONE)
          return;                                          // 打不开, 当没加载
