@@ -143,11 +143,3 @@ cmake --build build_android
 | 测试输出中文乱码                                       | 程序运行时已切到 UTF-8 代码页，编译也启用了 `/utf-8`。若终端仍乱码，改用 Windows Terminal 或 `chcp 65001`                                |
 | 测试里出现 `[skip]`                                 | 机器没有可用声卡/麦克风，属预期降级，不代表 SDK 失败                                                                               |
 | 链接出现 CRT 冲突/`LNK4098`                          | 本项目自带的 `-static-md` 预编译库与 `/MD` 匹配，不要混用其它 CRT 变体的 Vorbis/Opus                                               |
-
-## 9. 构建通过检查清单
-
-- [ ] 根工程配置成功，输出 `Build files have been written to ...`
-- [ ] `audio_sdk.dll`、`.lib`、`.pdb` 出现在 `build/sdk/Release/`
-- [ ] `audio_sdk_tests.exe` 运行后退出码为 0，输出 `全部通过`
-- [ ] `windows_app/resource/audio_sdk.dll` 已更新
-- [ ] `audio_win_app.exe` 能启动并加载 DLL

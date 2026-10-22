@@ -195,6 +195,14 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
         return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;   // 不是认识的音频格式
     }
 
+    // AAudio 输出流固定开成 PCM_I16, 所以只能喂 16bit 
+    if (!bOgg && !bOpus && pHdr && pHdr->bitsPerSample != BITS_PER_SAMPLE) {
+        AUDIO_LOG_ERROR(kTag, "只支持 %dbit PCM, 文件是 %ubit path=\"%s\" -> FORMAT_NOT_SUPPORTED",
+                        BITS_PER_SAMPLE, pHdr->bitsPerSample, utf8Path);
+        p->m_file.close();
+        return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;
+    }
+
     p->m_path = utf8Path;
     p->m_readerKind.store(bOpus ? Impl::ReaderKind::Opus
                     : bOgg  ? Impl::ReaderKind::Ogg
@@ -421,11 +429,23 @@ void CAudioPlayer::Impl::ReadLoop(){
         // 每块都 seekg: 读满 64KB(约 0.74 秒音频)才做一次, 开销可以忽略;
         m_file.clear();
         m_file.seekg(static_cast<std::streamoff>(m_payloadOffset + head));
-        if (!m_file.read(reinterpret_cast<char*>(chunk.data()), static_cast<std::streamsize>(n))) {
+        m_file.read(reinterpret_cast<char*>(chunk.data()), static_cast<std::streamsize>(n));
+        // read 在短读时也会置 failbit, 所以不能只看返回值 —— 先看真读到了多少
+        const size_t nGot = static_cast<size_t>(m_file.gcount());
+        if (nGot == 0) {
             // 文件被截断/被别的程序截走
+            AUDIO_LOG_WARN(kTag, "读取中断于 %zu / %zu 字节, 按实际长度收尾",
+                           head, m_dataSize.load(std::memory_order_relaxed));
+            m_dataSize.store(head, std::memory_order_relaxed);
             m_file.clear();
             std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs * 10));
             continue;
+        }
+        if (nGot < n) {
+            // 尾块短读: 用拿到的这部分, 并把总长收到这里
+            AUDIO_LOG_WARN(kTag, "尾块只读到 %zu / %zu 字节, 按实际长度收尾", nGot, n);
+            m_dataSize.store(head + nGot, std::memory_order_relaxed);
+            n = nGot;
         }
         if (m_encrypted)
             CEncryptedFormat::XorCrypt(chunk.data(), n, head);   // 密钥相位跟着载荷内偏移走

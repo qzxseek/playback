@@ -86,7 +86,7 @@ AUDIO_API void AudioSdk_RecorderSetOutputPath(void* handle, const char* utf8Path
 
 // 落盘容器
 AUDIO_API void AudioSdk_RecorderSetFormat(void* handle, int format);
-AUDIO_API int  AudioSdk_RecorderGetFormat(void* handle);          // 返回 AudioSdkFormat 序号
+AUDIO_API int  AudioSdk_RecorderGetFormat(void* handle);          // 返回 AudioSdkFormat 序号; 句柄无效返回 -1
 
 // 切换加密开关(录制中不生效)
 AUDIO_API void AudioSdk_RecorderSetAencEncrypt(void* handle);

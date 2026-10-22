@@ -15,7 +15,10 @@ void CWaveRing::Push(const float* minmax, int points){
         }
 
         unsigned total = m_total.load(std::memory_order_relaxed);
-        if (total < m_read.load(std::memory_order_relaxed)) assert("播放音波图错误");
+        if (total < m_read.load(std::memory_order_relaxed)) {
+            assert(false && "CWaveRing: m_total < m_read, Reset 与 Push 发生了并发");
+            return;
+        }
         for (int i = 0; i < points; ++i){
             float* slot = m_slot[total % kCapacity];
             slot[0] = minmax[i * 2];        // min

@@ -37,7 +37,7 @@ AUDIO_API void AudioSdk_PlayerDestroy(void* handle) {
 }
 
 AUDIO_API int AudioSdk_IsAencFile(const char* utf8Path) {
-    if (utf8Path == nullptr) return static_cast<int>(AudioSdk::AudioSdkState::INVALID_PARAMETER);
+    if (utf8Path == nullptr) return 0;
     return CEncryptedFormat::IsAencFile(utf8Path) ? 1 : 0;
 }
 
@@ -145,7 +145,7 @@ AUDIO_API void AudioSdk_RecorderSetFormat(void* handle, int format) {
 }
 
 AUDIO_API int AudioSdk_RecorderGetFormat(void* handle) {
-    return handle ? static_cast<int>(AsRecorder(handle)->GetFormat()) : 0;
+    return handle ? static_cast<int>(AsRecorder(handle)->GetFormat()) : -1;
 }
 
 // 切换加密开关(录制中不生效)
