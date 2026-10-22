@@ -410,8 +410,18 @@ void CAudioRecorder::Impl::OnBufferDone(WAVEHDR* hdr) {
    if (m_isRecording.load(std::memory_order_acquire) &&
        m_writeErr.load(std::memory_order_relaxed) == 0) {
       // 挂回去了才记账; 挂失败就等于这块退休, 计数不能凭空加回去
-      if (waveInAddBuffer(m_hWaveIn, hdr, sizeof(WAVEHDR)) == MMSYSERR_NOERROR)
+      const MMRESULT add = waveInAddBuffer(m_hWaveIn, hdr, sizeof(WAVEHDR));
+      if (add == MMSYSERR_NOERROR) {
          m_bufsInDriver.fetch_add(1, std::memory_order_release);
+      } else {
+         // 挂不回去 = 这块彻底退休
+         AUDIO_LOG_ERROR(kTag, "续挂录音缓冲失败 (MMRESULT=%u), 可用缓冲在减少, 录音会提前结束",
+                         static_cast<unsigned>(add));
+         int iExpected = 0;      // 只记第一次, 后面的失败不再覆盖
+         m_writeErr.compare_exchange_strong(iExpected,
+            static_cast<int>(AudioSdk::AudioSdkState::PLATFORM_ERROR),
+            std::memory_order_relaxed);
+      }
    }
 }
 

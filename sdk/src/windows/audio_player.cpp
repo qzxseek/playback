@@ -63,6 +63,7 @@ struct CAudioPlayer::Impl
 
     std::ifstream m_file;
     std::string   m_path;                     // 原路径: BuildWaveform 要另开一份流
+    int    m_prepFails = 0;                   // PreparePlay 连续失败次数(成功即清零)
     size_t m_payloadOffset = 0;               // data 块在文件里的起始偏移
     bool   m_encrypted = false;               // 密文容器: 每块要按载荷内偏移解密
     size_t m_readPos = 0;                     // 数据加载位置(载荷内偏移)
@@ -275,7 +276,8 @@ AudioSdk::AudioSdkState CAudioPlayer::PlayWavFile(const char* utf8Path){
       p->m_fmt.nAvgBytesPerSec = pHdr->byteRate;
    }
 
-   p->m_readPos = 0;  // 初始化读取位置为 0
+   p->m_readPos   = 0;  // 初始化读取位置为 0
+   p->m_prepFails = 0;  // 上一轮的失败计数不带进这一轮
    p->m_playPos.store(0, std::memory_order_relaxed);  // 初始化播放位置为 0
 
    const size_t blockSize = p->m_fmt.nBlockAlign * 2048;      // 缓冲区大小 ~46ms/块
@@ -375,8 +377,9 @@ void CAudioPlayer::Impl::FeedLoop(){
       // 1) 回收已播完的块: 回调不再改状态(防死锁), 由本线程查 WHDR_DONE 发现
       for (auto& block : m_vecBlocks){
          if (block.isDevice && (block.waveHdr.dwFlags & WHDR_DONE)){
-            block.isDevice = false;                  // 设备已放完, 块回到闲置池
+            waveOutUnprepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
             block.waveHdr.dwFlags = 0;               // 清标志, 供下次 prepare 复用
+            block.isDevice = false;                  // 设备已放完, 块回到闲置池
          }
       }
 
@@ -439,17 +442,39 @@ bool CAudioPlayer::Impl::PreparePlay(){
          if (m_encrypted)
             CEncryptedFormat::XorCrypt(block.vecData.data(), szData, m_readPos);
       }
-      m_readPos += szData;
 
       block.waveHdr = {};                             // 清楚旧数据
       block.waveHdr.lpData = (LPSTR)block.vecData.data();
       block.waveHdr.dwBufferLength = szData;
-      block.isDevice = true;
 
-      auto res = waveOutPrepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));  // 打开缓冲区
-      if (res != MMSYSERR_NOERROR) return false;
-      res = waveOutWrite(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
-      if (res != MMSYSERR_NOERROR) return false;
+      MMRESULT res = waveOutPrepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
+      if (res == MMSYSERR_NOERROR)
+         res = waveOutWrite(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
+      if (res != MMSYSERR_NOERROR){
+         // 回滚: 块必须留在闲置池里。否则 isDevice 一直是 true、却永远等不到
+         if (block.waveHdr.dwFlags & WHDR_PREPARED)
+            waveOutUnprepareHeader(m_hWaveOut, &block.waveHdr, sizeof(WAVEHDR));
+         block.waveHdr = {};
+         block.isDevice = false;
+
+         // 压缩流的解码器已经吃过这一段了, 得回到原位置才能重读
+         if (eKind == ReaderKind::Opus)
+            m_opusReader.SeekTo(m_readPos);
+         else if (eKind == ReaderKind::Ogg)
+            m_oggReader.SeekTo(m_readPos);
+
+         // 连着失败多半是设备没了 —— 再重试也是同一个结果
+         if (++m_prepFails >= 8){
+            AUDIO_LOG_ERROR(kTag, "连续 %d 次写入设备失败(MMRESULT=%u), 停止播放",
+                            m_prepFails, static_cast<unsigned>(res));
+            m_readPos = m_dataSize;
+         }
+         return false;
+      }
+
+      block.isDevice = true;
+      m_readPos += szData;
+      m_prepFails = 0;
       return true;
    }
    return false;
