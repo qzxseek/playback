@@ -515,6 +515,14 @@ static void TestOpusRoundTrip() {
         CWaveform::ComputePeaks(mid.data(), got, mmMid, 1);
         CHECK(got > 0 && mmMid[1] > 0.2f, "Opus: 跳转位置解出来的也是波形");
 
+        // Seek(0) 必须与"刚 Open 完从头读"逐字节一致 —— pre-skip 不能漏
+        CHECK(r.SeekTo(0) == AudioSdk::AudioSdkState::NONE, "Opus: SeekTo(0) 成功");
+        std::vector<uint8_t> head(out.size());
+        const size_t nHead = r.Read(head.data(), head.size());
+        CHECK(nHead == out.size(), "Opus: Seek(0) 后能读回整段");
+        CHECK(nHead == out.size() && head == out,
+              "Opus: Seek(0) 的结果与从头读完全一致(pre-skip 没漏)");
+
         r.Close();
         std::remove(path.c_str());
     }

@@ -266,6 +266,12 @@ AudioSdk::AudioSdkState COggStreamWriter::Write(void* pcm, size_t n){
     // 转成 [-1, 1] 的浮点, 顺便去交错: vorbis 只吃 float, 而且要的是"每个声道一段连续内存", 不能是交错排布
     const int16_t* const src = static_cast<const int16_t*>(pcm);
     float** const buf = vorbis_analysis_buffer(&m_vd, iSamples);
+    if (!buf){
+        // 内部缓冲重分配失败时返回 NULL。不判空就直接 buf[ch] 是空指针写
+        AUDIO_LOG_ERROR(kTag, "vorbis_analysis_buffer 返回 NULL(%d 采样) -> OUT_OF_MEMORY", iSamples);
+        m_bBroken = true;           // 管道状态已经不可信, 别再往下喂
+        return AudioSdk::AudioSdkState::OUT_OF_MEMORY;
+    }
     for (int ch = 0; ch < CHANNELS; ++ch) {
         float* const dst = buf[ch];
         for (int i = 0; i < iSamples; ++i)

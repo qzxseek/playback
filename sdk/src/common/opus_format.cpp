@@ -332,6 +332,8 @@ struct COpusStreamReader::Impl
     std::vector<PageInfo> m_vecPages;
     std::vector<int16_t>  m_vecPcm;   // 当前包解出的 PCM
     size_t m_nPcmPos = 0;
+    // 解码途中遇到过坏包,Read 到底之后调用方靠它区分"正常播完"和"数据是残的"
+    bool   m_bDecodeError = false;
 
     ~Impl(){
         Release();                // Open 中途失败时 delete p 也不会漏 ogg/opus 状态
@@ -453,6 +455,7 @@ struct COpusStreamReader::Impl
                                             aiPcm, kMaxFrame, 0);
             if (iFrames < 0){
                 AUDIO_LOG_ERROR(kTag, "解码失败: %s", opus_strerror(iFrames));
+                m_bDecodeError = true;
                 return -1;
             }
 
@@ -633,6 +636,13 @@ AudioSdk::AudioSdkState COpusStreamReader::Open(const char* utf8Path){
 
         // 时长只能靠末页的 granulepos: Opus 是变长帧, 从文件大小推不出来。
         // gp 含开头的 pre-skip, 所以可播采样数要减掉它
+        constexpr int64_t kMaxSamples = int64_t{1} << 40;
+        if (llLastGp < 0 || llLastGp > kMaxSamples){
+            AUDIO_LOG_ERROR(kTag, "granulepos 超出合理范围(%lld) path=\"%s\" -> FORMAT_NOT_SUPPORTED",
+                            static_cast<long long>(llLastGp), utf8Path);
+            delete pImpl;
+            return AudioSdk::AudioSdkState::FORMAT_NOT_SUPPORTED;
+        }
         pImpl->m_llTotalSamples = llLastGp > pImpl->m_iPreSkip ? llLastGp - pImpl->m_iPreSkip : 0;
 
         int iErr = OPUS_OK;
@@ -655,6 +665,7 @@ AudioSdk::AudioSdkState COpusStreamReader::Open(const char* utf8Path){
         pImpl->m_file.seekg(static_cast<std::streamoff>(pImpl->m_nPrefix));
         pImpl->m_iSkipPre   = pImpl->m_iPreSkip;   // 第一包解出来先丢 pre-skip 个采样
         pImpl->m_llTimeline = 0;
+        pImpl->m_bDecodeError = false;             // 新一轮, 清掉上一次的
         pImpl->m_llDiscard  = 0;
 
         m_impl       = pImpl;
@@ -712,6 +723,10 @@ size_t COpusStreamReader::Read(uint8_t* dst, size_t n){
     return nDone;
 }
 
+bool COpusStreamReader::HadDecodeError() const{
+    return m_impl && m_impl->m_bDecodeError;
+}
+
 /**
  * @brief 按 PCM 字节位置定位。Opus 是变长帧, 只能退到最近的页边界再丢样点
  * @param pcmBytes 目标位置(相对整条流开头)
@@ -741,16 +756,20 @@ AudioSdk::AudioSdkState COpusStreamReader::SeekTo(size_t pcmBytes){
 
     std::streamoff lOff  = 0;
     int64_t        llBase = 0;
+    // 起点是否还落在 pre-skip 区里
+    bool bAtHead = (nIdx == 0);                  // 第 0 页之前没有页 = 流头
     if (nIdx < impl.m_vecPages.size()){
         lOff = impl.m_vecPages[nIdx].lOffset;
         for (size_t j = nIdx; j-- > 0;){         // 该页之前的 granulepos = 起点
             if (impl.m_vecPages[j].llGp >= 0){
                 llBase = impl.m_vecPages[j].llGp - impl.m_iPreSkip;
+                if (llBase < 0){
+                    bAtHead = true;              // 前一页还在 pre-skip 区内
+                    llBase  = 0;
+                }
                 break;
             }
         }
-        if (llBase < 0)
-            llBase = 0;
     }
 
     // libogg 和解码器都还记着跳转前的位置, 必须一起复位, 否则会从半截包开始解
@@ -763,10 +782,11 @@ AudioSdk::AudioSdkState COpusStreamReader::SeekTo(size_t pcmBytes){
     ogg_stream_reset(&impl.m_stream);
     opus_decoder_ctl(impl.m_pDec, OPUS_RESET_STATE);
     impl.m_bEos = false;
+    impl.m_bDecodeError = false;      // 跳到新位置, 上一段的解码错误不算在这一段
     impl.m_vecPcm.clear();
     impl.m_nPcmPos = 0;
 
-    impl.m_iSkipPre   = (lOff == 0) ? impl.m_iPreSkip : 0;   // 从流头起才需要丢 pre-skip
+    impl.m_iSkipPre   = bAtHead ? impl.m_iPreSkip : 0;
     impl.m_llTimeline = llBase;
     impl.m_llDiscard  = llTarget - llBase;
     if (impl.m_llDiscard < 0)

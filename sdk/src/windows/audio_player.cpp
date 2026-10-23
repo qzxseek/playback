@@ -425,6 +425,10 @@ bool CAudioPlayer::Impl::PreparePlay(){
                       ? m_opusReader.Read(block.vecData.data(), szData)
                       : m_oggReader.Read(block.vecData.data(), szData);
          if (szData == 0) {           // 读干净了(或解码出错): 当作文件到此为止
+            // 两种"到头"要分开报: 正常播完是预期行为, 有坏包说明听到的是残的
+            if (eKind == ReaderKind::Opus && m_opusReader.HadDecodeError())
+               AUDIO_LOG_ERROR(kTag, "Opus 解码中途出错, \"%s\" 只能播到这里(%zu / %zu 字节)",
+                               m_path.c_str(), m_readPos, m_dataSize);
             m_readPos = m_dataSize;
             return false;
          }

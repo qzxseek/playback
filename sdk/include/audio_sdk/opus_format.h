@@ -89,6 +89,8 @@ public:
 
     // 最多读 n 字节; 返回实际读到的字节数(0 = 到头)
     size_t Read(uint8_t* dst, size_t n);
+    // 读到头之后才能问: 是正常播完, 还是中途有包解不开(数据不全)
+    bool HadDecodeError() const;
     // 跳到 PCM 字节位置(按 blockAlign 取整), 供进度条拖动
     AudioSdk::AudioSdkState SeekTo(size_t pcmBytes);
     // 整段扫一遍算峰值, 给波形图用

@@ -415,8 +415,12 @@ void CAudioPlayer::Impl::ReadLoop(){
                                            : m_oggReader.Read(chunk.data(), n);
             if (n == 0) {
                 // 解码器提前给干净了(文件被截断 / 流损坏)
-                AUDIO_LOG_WARN(kTag, "解码提前结束于 %zu / %zu 字节, 按实际长度收尾",
-                               head, m_dataSize.load(std::memory_order_relaxed));
+                if (eKind == ReaderKind::Opus && m_opusReader.HadDecodeError())
+                    AUDIO_LOG_ERROR(kTag, "Opus 解码中途出错, 只能播到 %zu / %zu 字节",
+                                    head, m_dataSize.load(std::memory_order_relaxed));
+                else
+                    AUDIO_LOG_WARN(kTag, "解码提前结束于 %zu / %zu 字节, 按实际长度收尾",
+                                   head, m_dataSize.load(std::memory_order_relaxed));
                 m_dataSize.store(head, std::memory_order_relaxed);
                 std::this_thread::sleep_for(std::chrono::milliseconds(kIdleMs));
                 continue;
