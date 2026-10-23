@@ -544,34 +544,7 @@ AUDIO_API int AudioSdk_PlayerPlayFile(void* handle, const char* utf8Path) {
 
 完整结果见 [测试报告](../tests/test_report.md)。
 
----
-
-## 9. 已知问题与后续计划
-
-### 已知问题
-
-| 项 | 影响 | 优先级 |
-| --- | --- | --- |
-| Android 无 SHARED 回退 | 不支持 MMAP 独占的设备直接开流失败 | 高 |
-| Android 在实时回调里同步落盘 / 编码 | 重负载下可能 xrun、丢帧 | 高 |
-| C ABI 无异常保护 | `bad_alloc` 理论上会穿过 `extern "C"` | 中 |
-| 加密强度等同于混淆 | 不能当保密手段用 | 说明性 |
-| 句柄无类型标识 | 传错句柄类型即 UB | 低 |
-| 物理拔出 USB 声卡可能不送 `WIM_CLOSE` | Windows 侧可能感知不到设备消失 | 低 |
-
-> 完整清单（80 条，含 2 条阻断）见桌面 `review.md`。
-
-### 后续计划
-
-- [ ] Android 增加 SHARED 模式回退
-- [ ] 录音写盘改独立线程 + 无锁队列
-- [ ] 支持 48000 Hz / 双声道录制
-- [ ] 增加 iOS / macOS 平台层（届时评估是否引入 Oboe / miniaudio）
-- [ ] 补充 CI 与 Android 侧自动化测试
-
----
-
-## 10. 相关文档
+## 9. 相关文档
 
 - [构建指南](build_guide.md)
 - [SDK 接口文档](sdk_api.md)

@@ -59,13 +59,13 @@ bool WavValidate::ValidateHeader(const uint8_t* data, size_t size, size_t fileSi
     const size_t riffSize     = m_header.riffSize; // RIFF 块载荷长度 = 文件总长 - 8
 
     // riffSize 必须与文件实际大小一致: 短了是截断, 长了说明缓冲里混了别的东西。
-    if (riffSize + 8u != fileSize)
+    if (fileSize < 8 || riffSize != fileSize - 8)
         return false;
 
     // ---- 按 RIFF 子块遍历, 依次定位 fmt 块与 data 块的真实偏移 ----
     bool   haveFmt   = false;
     size_t pos       = 12;                         // 第一个子块紧跟 12 字节 RIFF 头
-    while (pos + 8 <= size) {
+    while (size >= 8 && pos <= size - 8) {
         const char*     id   = reinterpret_cast<const char*>(base + pos);
         // 小端读出块长度
         const uint32_t  len  = static_cast<uint32_t>(base[pos + 4]) |
@@ -75,7 +75,7 @@ bool WavValidate::ValidateHeader(const uint8_t* data, size_t size, size_t fileSi
 
         if (!haveFmt && std::memcmp(id, "fmt ", 4) == 0) {
             // 只认 PCM 的 16 字节 fmt: 载荷长度虚报或截断都拒
-            if (len != 16 || pos + 8 + 16 > size)
+            if (len != 16 || size - pos - 8 < 16)
                 return false;
             // fmt 载荷固定布局: 16 字节正好覆盖 audioFormat..bitsPerSample,
             // 从真实位置回填快照 —— 之后 Header() 给的就是真实参数
@@ -93,10 +93,10 @@ bool WavValidate::ValidateHeader(const uint8_t* data, size_t size, size_t fileSi
 
             // blockAlign/byteRate 必须与三个基本参数自洽
             // (blockAlign 在下面 data 的整帧检查里当除数, 0 或错值都会出乱子)
-            const uint32_t expectedBlockAlign =
-                static_cast<uint32_t>(m_header.numChannels) *
+            const uint64_t expectedBlockAlign =
+                static_cast<uint64_t>(m_header.numChannels) *
                 (m_header.bitsPerSample / 8);
-            const uint32_t expectedByteRate =
+            const uint64_t expectedByteRate =
                 m_header.sampleRate * expectedBlockAlign;
             if (m_header.blockAlign != expectedBlockAlign ||
                 m_header.byteRate != expectedByteRate) {
@@ -109,8 +109,8 @@ bool WavValidate::ValidateHeader(const uint8_t* data, size_t size, size_t fileSi
             // data 先于 fmt: 没有格式参数, 不是能播的 WAV
             if (!haveFmt)
                 return false;
-            // 不能超过文件末尾(data 后允许再垫别的子块, 不要求顶到 EOF)
-            if (len + (pos + 8) > fileSize)
+            const size_t dataStart = pos + 8;       
+            if (dataStart > fileSize || len > fileSize - dataStart)
                 return false;
             // 数据长度必须是帧的整数倍, 否则最后一帧是残的
             if (len % m_header.blockAlign != 0)
@@ -120,8 +120,10 @@ bool WavValidate::ValidateHeader(const uint8_t* data, size_t size, size_t fileSi
             return true;
         }
 
-        // 其它子块: 跳过载荷 + 奇数长度时的 1 字节填充
-        pos += 8 + len + (len & 1);
+        const size_t nRemain = size - pos - 8;          // 循环条件已保证不下溢
+        if (len > nRemain)
+            break;                                      // 声明长度超出缓冲, 后面的块看不见
+        pos += 8 + static_cast<size_t>(len) + (len & 1);
     }
     // 走到头也没找到合法的 fmt+data 组合 —— 不是能播的 WAV
     return false;

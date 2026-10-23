@@ -56,6 +56,7 @@ private:
     std::vector<uint8_t> m_vecScratch;      // 加密暂存, 见 Emit 的说明
     std::string m_path;            // 落盘路径: 写失败时用它查剩余空间 + 记日志
     bool m_bOpen = false;           // 编码器可用(五个结构体已 init)
+    bool m_bBroken = false;         // 判断落盘是否写坏过一次
     bool m_bEncrypt = false;
     uint64_t m_iWritten = 0;    // 已编码的载荷字节数, 也是下一段的 XOR 相位
 

@@ -123,7 +123,7 @@ AudioSdk::AudioSdkState CWavStreamWriter::Write(void* pcm, size_t n){
     }
 
     if (!m_file.good()) {
-        
+        CEncryptedFormat::XorCrypt(p, n, static_cast<size_t>(m_written));   // 写失败后要回滚
         const int err = errno;
         std::error_code ec;
         const std::filesystem::space_info sp = std::filesystem::space(m_path, ec);
@@ -181,7 +181,7 @@ AudioSdk::AudioSdkState CWavFormat::SaveWavFile(const char* filePath, const void
     // 路径为NULL
     if (!filePath)
         return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
-
+    if (dataSize > 0 && !data) return AudioSdk::AudioSdkState::INVALID_PARAMETER;
     // 加密
     if (bEncrypt)
         return CEncryptedFormat::SaveAencFile(filePath, data, dataSize);

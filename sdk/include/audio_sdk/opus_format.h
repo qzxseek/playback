@@ -63,6 +63,7 @@ private:
     std::string m_path;                  // 落盘路径
     OggOpusEnc* m_enc = nullptr;         // libopusenc 编码器(内部管着重采样 + 分页)
     bool     m_bOpen = false;
+    bool     m_bBroken = false;
     bool     m_bEncrypt = false;
     uint64_t m_iWritten = 0;             // 已写的载荷字节数, 也是下一段的 XOR 相位
 };

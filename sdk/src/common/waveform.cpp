@@ -137,5 +137,5 @@ bool CWaveform::BuildFilePeaks(const char* utf8Path, size_t payloadOffset, size_
             out[i * 2 + 1] = mx;
         }
     }
-    return true;
+    return ok;
 }

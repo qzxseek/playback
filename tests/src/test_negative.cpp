@@ -210,6 +210,33 @@ static void TestDataSizeOverflow() {
     CHECK(!v.Validate(buf.data(), buf.size()), "dataSize 超出文件末尾被拒绝");
 }
 
+/**
+ * @brief 子块长度声明成接近 UINT32_MAX: 必须是"干净地拒", 不能回绕成死循环
+ * @note 原来的遍历是 pos += 8 + len + (len & 1)。len = 0xFFFFFFF8 时
+ *       8 + len 在 32 位 size_t 上正好回绕成 0, pos 原地不动 → 死循环。
+ *       现在改成先比较"剩余多少", 超出就停。64 位上不回绕, 但同样要拒。
+ */
+static void TestChunkLengthOverflow() {
+    const std::vector<uint8_t> base = tst::MakeWav(1024);
+
+    // 在 fmt 前面插一个 JUNK 块, 长度声明成 0xFFFFFFF8(实际没有载荷)
+    std::vector<uint8_t> buf(base.begin(), base.begin() + 12);
+    const char junkId[4] = {'J', 'U', 'N', 'K'};
+    buf.insert(buf.end(), junkId, junkId + 4);
+    for (int i = 0; i < 4; ++i) buf.push_back(0xFF);      // len = 0xFFFFFFFF
+    buf.insert(buf.end(), base.begin() + 12, base.end());
+    tst::PutU32(buf, tst::kOffRiffSize, static_cast<uint32_t>(buf.size() - 8));
+
+    WavValidate v;
+    CHECK(!v.Validate(buf.data(), buf.size()), "子块长度 ≈ UINT32_MAX 被拒绝(不会回绕/死循环)");
+
+    // riffSize 回绕: 声称 4GB 的头, 配一个"退绕后正好对得上"的 7 字节总长
+    std::vector<uint8_t> buf2 = tst::MakeWav(1024);
+    tst::PutU32(buf2, tst::kOffRiffSize, 0xFFFFFFFFu);     // +8 在 uint32 上回绕成 7
+    WavValidate v2;
+    CHECK(!v2.Validate(buf2.data(), buf2.size(), 7), "riffSize 回绕后不能与 7 字节总长匹配");
+}
+
 // ===========================================================================
 // 截断 / 加密容器
 // ===========================================================================
@@ -508,6 +535,7 @@ int RunNegative() {
     RUN(TestZeroFormatParams);
     RUN(TestDataNotWholeFrames);
     RUN(TestDataSizeOverflow);
+    RUN(TestChunkLengthOverflow);
     RUN(TestTruncatedSizes);
     RUN(TestHeaderOnlyTruncation);
     RUN(TestAencPrefixTruncated);

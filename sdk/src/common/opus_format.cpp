@@ -90,6 +90,7 @@ AudioSdk::AudioSdkState COpusStreamWriter::Open(const char* utf8Path, bool bEncr
             return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;   // 还没开成, 没什么可清的
 
         m_bEncrypt = bEncrypt;
+        m_bBroken  = false;             // 新文件, 上一轮的写坏状态不带过来
         m_iWritten = 0;
         m_path     = utf8Path;
 
@@ -159,6 +160,8 @@ AudioSdk::AudioSdkState COpusStreamWriter::Open(const char* utf8Path, bool bEncr
  * @return 是否写成功
  */
 bool COpusStreamWriter::Emit(const void* p, size_t n){
+    if (m_bBroken)
+        return false;               // 相位已经不可信, 收尾时 drain 也别再往盘上写
     if (!m_file.is_open())
         return false;
     if (n == 0)
@@ -179,6 +182,7 @@ bool COpusStreamWriter::Emit(const void* p, size_t n){
 
     m_file.write(pSrc, static_cast<std::streamsize>(n));
     if (!m_file.good()) {
+        m_bBroken = true;
         const int iErr = errno;
         std::error_code ecFs;
         const std::filesystem::space_info stSpace = std::filesystem::space(m_path, ecFs);
@@ -207,6 +211,8 @@ bool COpusStreamWriter::Emit(const void* p, size_t n){
 AudioSdk::AudioSdkState COpusStreamWriter::Write(void* pcm, size_t n){
     if (!m_bOpen)
         return AudioSdk::AudioSdkState::FILE_OPEN_FAILED;
+    if (m_bBroken)
+        return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;   // 已经写坏过, 别再用错相位往下写
     if (n == 0)
         return AudioSdk::AudioSdkState::NONE;      // 空块不算失败(录音刚起可能给出 0 字节的块)
     if (!pcm || n % kSampleBytes != 0)
@@ -232,7 +238,8 @@ bool COpusStreamWriter::Finish(){
     if (!m_bOpen)
         return true;                // 没打开过、或已经收过尾 —— 没有残文件
 
-    bool bSuccess = true;
+    // 中途写坏过: 后面的页要么没落盘、要么相位错位, 这个文件已经不是合法容器了
+    bool bSuccess = !m_bBroken;
 
     const int iErr = ope_encoder_drain(m_enc);
     if (iErr != OPE_OK){
