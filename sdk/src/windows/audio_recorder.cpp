@@ -146,18 +146,28 @@ void CAudioRecorder::Impl::AbortStart(){
    waveInReset(m_hWaveIn);        // 停采 + 让驱动把在途缓冲全部退回来
 
    // 等回调跑完再动缓冲
+   bool bWaited = false;
    for (int spin = 0; spin < 1000; spin++) {
       if (m_cbInFlight.load(std::memory_order_acquire) == 0 &&
-          m_bufsInDriver.load(std::memory_order_acquire) == 0)
+          m_bufsInDriver.load(std::memory_order_acquire) == 0) {
+         bWaited = true;
          break;
+      }
       Sleep(1);                   // 回调只做几次拷贝, 通常等不到这一下
+   }
+   if (!bWaited) {
+      AUDIO_LOG_WARN(kTag, "等待回调退出超时(在途回调 %d, 未退回缓冲 %d), 跳过这些缓冲的释放",
+                     m_cbInFlight.load(std::memory_order_acquire),
+                     m_bufsInDriver.load(std::memory_order_acquire));
    }
 
    for (int iN = 0; iN < kBufferCount; iN++) {
       WAVEHDR& hdr = m_waveHdrIn[iN];
       if (hdr.lpData == nullptr) continue;
       if (waveInUnprepareHeader(m_hWaveIn, &hdr, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) {
-         hdr.lpData = nullptr;    // 拿不回来就只摘指针不 free(兜底路径)
+         // 还在驱动队列里拿不回来: 只摘指针不 free, 宁可泄漏也不能让回调踩空
+         AUDIO_LOG_WARN(kTag, "第 %d 块缓冲收不回(waveInUnprepareHeader 失败), 只摘指针不释放", iN);
+         hdr.lpData = nullptr;
          continue;
       }
       delete[] hdr.lpData;
@@ -166,6 +176,10 @@ void CAudioRecorder::Impl::AbortStart(){
 
    waveInClose(m_hWaveIn);
    m_hWaveIn = NULL;
+
+   // 两个计数必须归零: 它们描述的是"这一次会话还有多少回调/缓冲在用"
+   m_cbInFlight.store(0, std::memory_order_release);
+   m_bufsInDriver.store(0, std::memory_order_release);
 }
 
 /**
