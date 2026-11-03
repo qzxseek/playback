@@ -37,6 +37,18 @@ const char* FormatName(AudioSdkFormat fmt) {
    default:                   return "WAV";
    }
 }
+
+/**
+ * @brief 计数器减一, 但绝不减成负数，避免在 AbortStart 中被减成负数
+ */
+void LeaveOnce(std::atomic<int>& aiCounter) {
+   int iPrev = aiCounter.load(std::memory_order_relaxed);
+   while (iPrev > 0 &&
+          !aiCounter.compare_exchange_weak(iPrev, iPrev - 1,
+                                           std::memory_order_acq_rel,
+                                           std::memory_order_relaxed)) {
+   }
+}
 }   // namespace
 
 /**
@@ -156,9 +168,9 @@ void CAudioRecorder::Impl::AbortStart(){
       Sleep(1);                   // 回调只做几次拷贝, 通常等不到这一下
    }
    if (!bWaited) {
-      AUDIO_LOG_WARN(kTag, "等待回调退出超时(在途回调 %d, 未退回缓冲 %d), 跳过这些缓冲的释放",
-                     m_cbInFlight.load(std::memory_order_acquire),
-                     m_bufsInDriver.load(std::memory_order_acquire));
+      AUDIO_LOG_ERROR(kTag, "等待回调退出超时(在途回调 %d, 未退回缓冲 %d), 本轮缓冲不再释放",
+                      m_cbInFlight.load(std::memory_order_acquire),
+                      m_bufsInDriver.load(std::memory_order_acquire));
    }
 
    for (int iN = 0; iN < kBufferCount; iN++) {
@@ -170,6 +182,11 @@ void CAudioRecorder::Impl::AbortStart(){
          hdr.lpData = nullptr;
          continue;
       }
+      if (!bWaited) {
+         AUDIO_LOG_WARN(kTag, "第 %d 块缓冲可能被在途回调引用, 只摘指针不释放(%zu 字节)", iN, kBufferSize);
+         hdr.lpData = nullptr;
+         continue;
+      }
       delete[] hdr.lpData;
       hdr.lpData = nullptr;
    }
@@ -177,7 +194,6 @@ void CAudioRecorder::Impl::AbortStart(){
    waveInClose(m_hWaveIn);
    m_hWaveIn = NULL;
 
-   // 两个计数必须归零: 它们描述的是"这一次会话还有多少回调/缓冲在用"
    m_cbInFlight.store(0, std::memory_order_release);
    m_bufsInDriver.store(0, std::memory_order_release);
 }
@@ -384,9 +400,9 @@ void CALLBACK CAudioRecorder::Impl::WaveInProc(HWAVEIN hWaveIn, UINT uMsg, DWORD
       return;
    Impl* self = reinterpret_cast<Impl*>(dwInstanceData);
    self->m_cbInFlight.fetch_add(1, std::memory_order_acq_rel);
-   self->m_bufsInDriver.fetch_sub(1, std::memory_order_acq_rel);
+   LeaveOnce(self->m_bufsInDriver);
    self->OnBufferDone((WAVEHDR*)wParam);
-   self->m_cbInFlight.fetch_sub(1, std::memory_order_acq_rel);
+   LeaveOnce(self->m_cbInFlight);
 }
 
 /**

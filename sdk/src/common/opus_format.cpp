@@ -224,6 +224,7 @@ AudioSdk::AudioSdkState COpusStreamWriter::Write(void* pcm, size_t n){
                                        static_cast<const opus_int16*>(pcm), iSamples);
     if (iErr != OPE_OK){
         AUDIO_LOG_ERROR(kTag, "编码失败: %s", ope_strerror(iErr));
+        m_bBroken = true;           // 管道状态已经不可信, 别再往下喂
         return AudioSdk::AudioSdkState::FILE_WRITE_FAILED;
     }
 
@@ -240,12 +241,14 @@ bool COpusStreamWriter::Finish(){
 
     // 中途写坏过: 后面的页要么没落盘、要么相位错位, 这个文件已经不是合法容器了
     bool bSuccess = !m_bBroken;
-
-    const int iErr = ope_encoder_drain(m_enc);
-    if (iErr != OPE_OK){
-        AUDIO_LOG_ERROR(kTag, "收尾失败: %s", ope_strerror(iErr));
-        bSuccess = false;
+    if (bSuccess) {
+        const int iErr = ope_encoder_drain(m_enc);
+        if (iErr != OPE_OK){
+            AUDIO_LOG_ERROR(kTag, "收尾失败: %s", ope_strerror(iErr));
+            bSuccess = false;
+        }
     }
+    
     ope_encoder_destroy(m_enc);     // drain 之后就该销毁, 它顺带触发 close 回调
     m_enc = nullptr;
 
